@@ -890,6 +890,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
     try {
       // 1. DYNAMICALLY FETCH THE LOGGED-IN USER'S ASSIGNED KITCHEN ID
+      // This looks up the active tenant context from the membership registry table
       const { data: memberData, error: memberError } = await supabase
         .from('kitchen_members')
         .select('kitchen_id')
@@ -900,6 +901,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
         throw new Error("Could not find an assigned kitchen workspace for this account.");
       }
       
+      // Assign the dynamic workspace ID to a safe variable
       const activeKitchenId = memberData.kitchen_id;
 
       // 2. Format image asset data payload
@@ -963,6 +965,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
         if (linesError) throw linesError;
 
+        // Clone our active recipes array to maintain immutable state tracking rules
         let workingRecipesCopy = JSON.parse(JSON.stringify(recipes || []));
 
         for (const line of parsedAiLines) {
@@ -971,6 +974,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
           const newCost = parseFloat(line.price_per_unit || 0);
 
+          // 1. Update the persistent columns in Postgres
           await supabase
             .from('recipe_ingredients')
             .update({ cost: newCost })
@@ -983,6 +987,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
             .eq('kitchen_id', activeKitchenId)
             .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
 
+          // 2. Loop through local React state memory and apply costs instantly
           workingRecipesCopy = workingRecipesCopy.map(recipe => {
             if (!recipe.ingredients) return recipe;
             
@@ -1002,11 +1007,13 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
           });
         }
 
+        // 3. Fire the hook update down from line 174 into your global app state cache
         if (onUpdateRecipes) {
           onUpdateRecipes(workingRecipesCopy);
         }
       }
 
+      // 7. Refresh your app's global or screen state with a fresh fetch query
       if (onUpdate && savedInvoice) {
         onUpdate([...safeInvoices, savedInvoice]);
       }
@@ -1031,7 +1038,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
         <div style={S.card}>
           <SectionLabel label="Capture Feed Input" />
           
-          {/* Hidden input field allowing all file methods without skipping the iPhone menu prompt */}
           <input 
             type="file" 
             accept="image/*" 
@@ -1041,12 +1047,12 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
             disabled={parsing} 
           />
 
-          <div style={{ display: 'flex', gap: 10, marginTop: 10, marginBottom: 20 }}>
-            {/* Unified action button triggering native action options sheets on mobile devices */}
+          {/* Clean single button approach - Native Mobile action sheet handles camera input */}
+          <div style={{ marginTop: 10, marginBottom: 20 }}>
             <button 
               onClick={() => fileInputRef.current?.click()} 
               disabled={parsing}
-              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700, padding: '14px' }}
+              style={{ ...S.btn, width: '100%', background: C.highlight, fontWeight: 700, padding: '12px' }}
             >
               📷 Choose File / Take Photo
             </button>
@@ -1054,7 +1060,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
           {previewUrl && (
             <div style={{ padding: '12px', background: C.highlight, borderRadius: 4, marginBottom: 16, textAlign: 'center', fontSize: 13, border: `1px solid ${C.paper2}` }}>
-              {file ? `📎 Document queued: ${file.name}` : "📸 Document image queued successfully"}
+              {file ? `📎 File queued: ${file.name}` : "📸 Camera capture queued successfully"}
             </div>
           )}
 
