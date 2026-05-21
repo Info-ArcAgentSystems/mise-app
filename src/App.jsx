@@ -92,7 +92,29 @@ export default function App() {
     { id: 'scan', label: 'Recipe Digitizer' },
     { id: 'settings', label: 'Settings' }
   ];
-
+// Fix mobile layout spilling bounds by calculating responsive display configuration states dynamically
+  const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
+  const S = {
+    layout: { display: 'flex', flexDirection: isMobileView ? 'column' : 'row', height: '100vh', background: C.paper },
+    sidebar: { width: 240, background: '#121210', borderRight: `1px solid ${C.inkRule}`, display: isMobileView ? 'none' : 'flex', flexDirection: 'column', padding: 20 },
+    mobileBar: { display: isMobileView ? 'flex' : 'none', justifyContent: 'space-between', alignItems: 'center', background: '#121210', color: '#fff', padding: '14px 20px', borderBottom: `1px solid ${C.inkRule}` },
+    main: { flex: 1, padding: isMobileView ? 20 : 40, overflowY: 'auto' },
+    drawerOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'flex-start' },
+    drawer: { width: 280, background: '#121210', height: '100%', padding: 20, display: 'flex', flexDirection: 'column', boxSizing: 'border-box' },
+    drawerLink: { background: 'none', border: 'none', color: '#a0a098', padding: '12px 14px', textAlign: 'left', fontSize: 14, fontWeight: 600, borderRadius: 4, cursor: 'pointer', width: '100%' },
+    drawerLinkActive: { background: '#1a1a18', color: C.paper },
+    menuBtn: { background: C.accent, border: 'none', color: '#fff', padding: '6px 12px', borderRadius: 4, fontSize: 12, fontWeight: 700, cursor: 'pointer' },
+    closeBtn: { background: 'none', border: 'none', color: '#fff', fontSize: 16, cursor: 'pointer' },
+    logoArea: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 30, padding: '0 4px' },
+    logoIcon: { fontSize: 24, color: C.accent },
+    logoText: { fontFamily: "'Bitter', serif", fontWeight: 900, fontSize: 18, color: '#fff', letterSpacing: '0.5px' },
+    logoSub: { fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: C.inkFade, letterSpacing: '1px', textTransform: 'uppercase', marginTop: 2 },
+    nav: { display: 'flex', flexDirection: 'column', gap: 4, flex: 1 },
+    navLink: { background: 'none', border: 'none', color: '#a0a098', padding: '10px 12px', textAlign: 'left', fontSize: 13, fontWeight: 600, borderRadius: 4, cursor: 'pointer', width: '100%', display: 'flex', alignItems: 'center', transition: 'all 0.15s' },
+    navLinkActive: { background: '#1a1a18', color: '#fff' },
+    sidebarFooter: { borderTop: `1px solid #1a1a18`, paddingTop: 16, marginTop: 'auto' },
+    signOutBtn: { background: 'none', border: 'none', color: C.red, fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: '4px 12px', borderRadius: 4, width: '100%', textAlign: 'left' }
+  };
   return (
     <div style={S.layout}>
       {/* Desktop Sidebar Layout */}
