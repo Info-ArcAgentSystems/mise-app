@@ -867,147 +867,79 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsing, setParsing] = useState(false);
 
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
-  const [cameraActive, setCameraActive] = useState(false);
 
   const safeInvoices = invoices || [];
   const safeRecipes = recipes || [];
-
-  const startCamera = async () => {
-    try {
-      setCameraActive(true);
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      alert(`Hardware Camera Stream Error: ${err.message}`);
-      setCameraActive(false);
-    }
-  };
-
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = videoRef.current.srcObject.getTracks();
-      tracks.forEach(track => track.stop());
-    }
-    setCameraActive(false);
-  };
-
-  const captureSnapshot = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    const maxDimension = 1200;
-    let width = video.videoWidth;
-    let height = video.videoHeight;
-    if (width > maxDimension || height > maxDimension) {
-      if (width > height) {
-        height = Math.round((height * maxDimension) / width);
-        width = maxDimension;
-      } else {
-        width = Math.round((width * maxDimension) / height);
-        height = maxDimension;
-      }
-    }
-
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, width, height);
-    
-    const dataUrl = canvas.toDataURL("image/jpeg");
-    setPreviewUrl(dataUrl);
-    
-    fetch(dataUrl)
-      .then(res => res.blob())
-      .then(blob => {
-        const mockFile = new File([blob], `cam_capture_${Date.now()}.jpg`, { type: "image/jpeg" });
-        setFile(mockFile);
-      });
-
-    stopCamera();
-  };
 
   const handleFileChange = (e) => {
     const selected = e.target.files[0];
     if (!selected) return;
     setFile(selected);
     setPreviewUrl(URL.createObjectURL(selected));
-    stopCamera();
   };
 
-  // ADDED ASYNC HERE — fixes all 7 compiler build errors
   const handleParseAndCommit = async () => {
-  if (!previewUrl) {
-    alert("Please capture or choose a valid invoice image file.");
-    return;
-  }
-
-  setParsing(true);
-
-  try {
-    // 1. DYNAMICALLY FETCH THE LOGGED-IN USER'S ASSIGNED KITCHEN ID
-    // This looks up the active tenant context from the membership registry table
-    const { data: memberData, error: memberError } = await supabase
-      .from('kitchen_members')
-      .select('kitchen_id')
-      .limit(1)
-      .single();
-
-    if (memberError || !memberData) {
-      throw new Error("Could not find an assigned kitchen workspace for this account.");
+    if (!previewUrl) {
+      alert("Please capture or choose a valid invoice image file.");
+      return;
     }
-    
-    // Assign the dynamic workspace ID to a safe variable
-    const activeKitchenId = memberData.kitchen_id;
 
-    // 2. Format image asset data payload
-    const targetBlob = await fetch(previewUrl).then(res => res.blob());
-    const base64String = await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result.split(',')[1]);
-      reader.readAsDataURL(targetBlob);
-    });
+    setParsing(true);
 
-    // 3. Trigger your edge function compiler pipeline
-    const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
-      method: "POST",
-      body: {
-        imageBase64: base64String,
-        fileType: file?.type || "image/jpeg",
-        fileName: file?.name || "camera_capture.jpg"
+    try {
+      const { data: memberData, error: memberError } = await supabase
+        .from('kitchen_members')
+        .select('kitchen_id')
+        .limit(1)
+        .single();
+
+      if (memberError || !memberData) {
+        throw new Error("Could not find an assigned kitchen workspace for this account.");
       }
-    });
+      
+      const activeKitchenId = memberData.kitchen_id;
 
-    if (edgeFunctionError || !aiExtractedData) {
-      throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
-    }
+      const targetBlob = await fetch(previewUrl).then(res => res.blob());
+      const base64String = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(targetBlob);
+      });
 
-    const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
-    const detectedTotal = parseFloat(aiExtractedData.total) || 0;
-    const parsedAiLines = aiExtractedData.lines || [];
+      const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
+        method: "POST",
+        body: {
+          imageBase64: base64String,
+          fileType: file?.type || "image/jpeg",
+          fileName: file?.name || "camera_capture.jpg"
+        }
+      });
 
-    // 4. Save main invoice document log under the dynamic kitchen ID
-    const { data: invData, error: invError } = await supabase
-      .from('invoices')
-      .insert([{
-        kitchen_id: activeKitchenId,
-        supplier: detectedSupplier,
-        ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
-        inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
-        total: detectedTotal,
-        lines: parsedAiLines.length,
-        status: "filed"
-      }]).select();
+      if (edgeFunctionError || !aiExtractedData) {
+        throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
+      }
 
-    if (invError) throw invError;
-    const savedInvoice = invData?.[0];
+      const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
+      const detectedTotal = parseFloat(aiExtractedData.total) || 0;
+      const parsedAiLines = aiExtractedData.lines || [];
 
-    if (savedInvoice && parsedAiLines.length > 0) {
+      const { data: invData, error: invError } = await supabase
+        .from('invoices')
+        .insert([{
+          kitchen_id: activeKitchenId,
+          supplier: detectedSupplier,
+          ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
+          inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
+          total: detectedTotal,
+          lines: parsedAiLines.length,
+          status: "filed"
+        }]).select();
+
+      if (invError) throw invError;
+      const savedInvoice = invData?.[0];
+
+      if (savedInvoice && parsedAiLines.length > 0) {
         const linesToInsert = parsedAiLines.map((line, idx) => ({
           kitchen_id: activeKitchenId,
           invoice_id: savedInvoice.id,
@@ -1026,7 +958,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
         if (linesError) throw linesError;
 
-        // Clone our active recipes array to maintain immutable state tracking rules
         let workingRecipesCopy = JSON.parse(JSON.stringify(recipes || []));
 
         for (const line of parsedAiLines) {
@@ -1035,7 +966,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
           const newCost = parseFloat(line.price_per_unit || 0);
 
-          // 1. Update the persistent columns in Postgres
           await supabase
             .from('recipe_ingredients')
             .update({ cost: newCost })
@@ -1048,7 +978,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
             .eq('kitchen_id', activeKitchenId)
             .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
 
-          // 2. Loop through local React state memory and apply costs instantly
           workingRecipesCopy = workingRecipesCopy.map(recipe => {
             if (!recipe.ingredients) return recipe;
             
@@ -1068,28 +997,26 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
           });
         }
 
-        // 3. Fire the hook update down from line 174 into your global app state cache
         if (onUpdateRecipes) {
           onUpdateRecipes(workingRecipesCopy);
         }
       }
 
-    // 7. Refresh your app's global or screen state with a fresh fetch query
-    if (onUpdate && savedInvoice) {
-      onUpdate([...safeInvoices, savedInvoice]);
+      if (onUpdate && savedInvoice) {
+        onUpdate([...safeInvoices, savedInvoice]);
+      }
+
+      alert("Success! Matched recipe costs updated for your active workspace.");
+      setPreviewUrl(null);
+      setFile(null);
+
+    } catch (err) {
+      console.error(err);
+      alert("Failed running image pipeline: " + err.message);
+    } finally {
+      setParsing(false);
     }
-
-    alert("Success! Matched recipe costs updated for your active workspace.");
-    setPreviewUrl(null);
-    setFile(null);
-
-  } catch (err) {
-    console.error(err);
-    alert("Failed running image pipeline: " + err.message);
-  } finally {
-    setParsing(false);
-  }
-}
+  };
 
   return (
     <div style={S.container}>
@@ -1108,31 +1035,17 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
             disabled={parsing} 
           />
 
-          <div style={{ display: 'flex', gap: 10, marginTop: 10, marginBottom: 20 }}>
+          <div style={{ marginTop: 10, marginBottom: 20 }}>
             <button 
               onClick={() => fileInputRef.current?.click()} 
               disabled={parsing}
-              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
+              style={{ ...S.btn, width: '100%', background: C.highlight, fontWeight: 700, padding: '12px' }}
             >
-              📁 Choose File
-            </button>
-            <button 
-              onClick={startCamera} 
-              disabled={parsing}
-              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
-            >
-              📷 Open Camera
+              📷 Choose File / Take Photo
             </button>
           </div>
 
-          {cameraActive && (
-            <div style={{ marginBottom: 20, border: `1px solid ${C.inkRule}`, background: '#000', padding: 8, textAlign: 'center' }}>
-              <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxHeight: 300, objectFit: 'cover' }} />
-              <button onClick={captureSnapshot} style={{ ...S.btnAccent, width: '100%', marginTop: 8 }}>📸 CAPTURE TARGET REGION</button>
-            </div>
-          )}
-
-          {previewUrl && !cameraActive && (
+          {previewUrl && (
             <div style={{ padding: '12px', background: C.highlight, borderRadius: 4, marginBottom: 16, textAlign: 'center', fontSize: 13, border: `1px solid ${C.paper2}` }}>
               {file ? `📎 File queued: ${file.name}` : "📸 Camera capture queued successfully"}
             </div>
@@ -1171,7 +1084,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
       </div>
     </div>
   );
-}
+} // <--- THIS BRACE CLOSES INVOICESSCREEN CORRECTLY AND RESTORES YOUR MAIN MOBILE DRAWERS
 
 function SuppliersScreen() {
   return (
