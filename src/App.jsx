@@ -5,7 +5,6 @@ import LoginScreen from "./components/AuthContext.jsx";
 import Auth from "./components/AuthContext.jsx";
 import { supabase } from "./lib/supabase.js";
 
-
 const C = {
   paper: '#f7f1e3',
   paper2: '#efe6d3',
