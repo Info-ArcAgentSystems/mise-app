@@ -897,166 +897,161 @@ function SousScreen({ settings, recipes, components, sales, waste }) {
   );
 }
 
-function InvoicesScreen({ invoices, onUpdate, recipes, onUpdateRecipes }) {
-  const [activeInvoice, setActiveInvoice] = useState(null);
-  const [activeLines, setActiveLines] = useState([]);
-  const [useLiveCamera, setUseLiveCamera] = useState(false);
+function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes }) {
+  const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  
+  const [parsing, setParsing] = useState(false);
+
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
+  const [cameraActive, setCameraActive] = useState(false);
 
   const safeInvoices = invoices || [];
   const safeRecipes = recipes || [];
 
-  // When a historical invoice card is tapped, fetch its line items from your new table
-  const loadInvoiceLines = async (invoiceId) => {
+  const startCamera = async () => {
     try {
-      const { data, error } = await supabase
-        .from('invoice_lines')
-        .select('*')
-        .eq('invoice_id', invoiceId)
-        .order('position', { ascending: true });
-
-      if (error) throw error;
-      setActiveLines(data || []);
-    } catch (err) {
-      console.error("Error retrieving matching invoice lines:", err);
-    }
-  };
-
-  const handleSelectInvoice = (inv) => {
-    setActiveInvoice(inv);
-    loadInvoiceLines(inv.id);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject;
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, []);
-
-  const startLiveCamera = async () => {
-    setUseLiveCamera(true);
-    setPreviewUrl(null);
-    try {
+      setCameraActive(true);
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
     } catch (err) {
-      console.error("Camera setup failed:", err);
-      alert("Unable to open hardware camera. Falling back to File Capture alternative mode.");
-      setUseLiveCamera(false);
+      alert(`Hardware Camera Stream Error: ${err.message}`);
+      setCameraActive(false);
     }
   };
 
-  const capturePhoto = () => {
-    if (videoRef.current && canvasRef.current) {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        setPreviewUrl(canvas.toDataURL("image/jpeg"));
-        const stream = video.srcObject;
-        if (stream) {
-          stream.getTracks().forEach(track => track.stop());
-        }
-        setUseLiveCamera(false);
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const tracks = videoRef.current.srcObject.getTracks();
+      tracks.forEach(track => track.stop());
+    }
+    setCameraActive(false);
+  };
+
+  const captureSnapshot = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    
+    const maxDimension = 1200;
+    let width = video.videoWidth;
+    let height = video.videoHeight;
+    if (width > maxDimension || height > maxDimension) {
+      if (width > height) {
+        height = Math.round((height * maxDimension) / width);
+        width = maxDimension;
+      } else {
+        width = Math.round((width * maxDimension) / height);
+        height = maxDimension;
       }
     }
-  };
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setPreviewUrl(URL.createObjectURL(file));
-      setUseLiveCamera(false);
-    }
-  };
-
-  const processInvoiceWithAiAndSupabase = async () => {
-    if (!previewUrl) return;
-    setIsProcessing(true);
-
-    try {
-      // 1. Get the current user's kitchen tenant context
-      const { data: memberData, error: memberError } = await supabase
-        .from('kitchen_members')
-        .select('kitchen_id')
-        .limit(1)
-        .single();
-
-      if (memberError || !memberData) {
-        throw new Error("Could not find a valid kitchen tenant session for your user profile.");
-      }
-
-      const activeKitchenId = memberData.kitchen_id;
-
-      // 2. Simulated Intelligent OCR Engine Extracting Items
-      const parsedAiLines = [
-        { name: "Beef Cheek", qty: 5, unit: "kg", price_per_unit: 13.50, line_total: 67.50 },
-        { name: "Salmon Fillet", qty: 2, unit: "kg", price_per_unit: 17.50, line_total: 35.00 }
-      ];
-
-      // 3. Update parent recipes states across local cache bounds
-      let matchedCount = 0;
-      const updatedRecipes = safeRecipes.map(r => {
-        const updatedIngredients = (r.ingredients || []).map(ing => {
-          let currentCost = ing.cost;
-          const match = parsedAiLines.find(line => ing.name && line.name.toLowerCase() === ing.name.toLowerCase());
-          if (match) {
-            currentCost = match.price_per_unit;
-            matchedCount++;
-          }
-          return { ...ing, cost: currentCost };
-        });
-        return { ...r, ingredients: updatedIngredients };
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, width, height);
+    
+    const dataUrl = canvas.toDataURL("image/jpeg");
+    setPreviewUrl(dataUrl);
+    
+    fetch(dataUrl)
+      .then(res => res.blob())
+      .then(blob => {
+        const mockFile = new File([blob], `cam_capture_${Date.now()}.jpg`, { type: "image/jpeg" });
+        setFile(mockFile);
       });
 
-      if (matchedCount > 0 && onUpdateRecipes) {
-        onUpdateRecipes(updatedRecipes);
+    stopCamera();
+  };
+
+  const handleFileChange = (e) => {
+    const selected = e.target.files[0];
+    if (!selected) return;
+    setFile(selected);
+    setPreviewUrl(URL.createObjectURL(selected));
+    stopCamera();
+  };
+
+  // ADDED ASYNC HERE — fixes all 7 compiler build errors
+  const handleParseAndCommit = async () => {
+  if (!previewUrl) {
+    alert("Please capture or choose a valid invoice image file.");
+    return;
+  }
+
+  setParsing(true);
+
+  try {
+    // 1. DYNAMICALLY FETCH THE LOGGED-IN USER'S ASSIGNED KITCHEN ID
+    // This looks up the active tenant context from the membership registry table
+    const { data: memberData, error: memberError } = await supabase
+      .from('kitchen_members')
+      .select('kitchen_id')
+      .limit(1)
+      .single();
+
+    if (memberError || !memberData) {
+      throw new Error("Could not find an assigned kitchen workspace for this account.");
+    }
+    
+    // Assign the dynamic workspace ID to a safe variable
+    const activeKitchenId = memberData.kitchen_id;
+
+    // 2. Format image asset data payload
+    const targetBlob = await fetch(previewUrl).then(res => res.blob());
+    const base64String = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result.split(',')[1]);
+      reader.readAsDataURL(targetBlob);
+    });
+
+    // 3. Trigger your edge function compiler pipeline
+    const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
+      method: "POST",
+      body: {
+        imageBase64: base64String,
+        fileType: file?.type || "image/jpeg",
+        fileName: file?.name || "camera_capture.jpg"
       }
+    });
 
-      // 4. Commit to parent table: public.invoices
-      const newInvoiceRow = {
+    if (edgeFunctionError || !aiExtractedData) {
+      throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
+    }
+
+    const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
+    const detectedTotal = parseFloat(aiExtractedData.total) || 0;
+    const parsedAiLines = aiExtractedData.lines || [];
+
+    // 4. Save main invoice document log under the dynamic kitchen ID
+    const { data: invData, error: invError } = await supabase
+      .from('invoices')
+      .insert([{
         kitchen_id: activeKitchenId,
-        supplier: "Wellocks Market",
-        ref: "INV-" + Math.floor(1000 + Math.random() * 9000),
-        inv_date: new Date().toISOString().split('T')[0],
-        total: 102.50,
+        supplier: detectedSupplier,
+        ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
+        inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
+        total: detectedTotal,
         lines: parsedAiLines.length,
-        status: "filed",
-        flag_note: ""
-      };
+        status: "filed"
+      }]).select();
 
-      const { data: invData, error: invError } = await supabase
-        .from('invoices')
-        .insert([newInvoiceRow])
-        .select();
+    if (invError) throw invError;
+    const savedInvoice = invData?.[0];
 
-      if (invError) throw invError;
-      const savedInvoice = invData?.[0];
-
-      // 5. Commit child rows: public.invoice_lines linked via invoice_id
-      if (savedInvoice) {
+    if (savedInvoice && parsedAiLines.length > 0) {
         const linesToInsert = parsedAiLines.map((line, idx) => ({
           kitchen_id: activeKitchenId,
           invoice_id: savedInvoice.id,
           position: idx,
           name: line.name,
-          qty: line.qty,
-          unit: line.unit,
-          price_per_unit: line.price_per_unit,
-          line_total: line.line_total,
+          qty: parseFloat(line.qty) || 1,
+          unit: line.unit || "",
+          price_per_unit: parseFloat(line.price_per_unit) || 0,
+          line_total: parseFloat(line.line_total) || 0,
           matched: line.name
         }));
 
@@ -1065,101 +1060,149 @@ function InvoicesScreen({ invoices, onUpdate, recipes, onUpdateRecipes }) {
           .insert(linesToInsert);
 
         if (linesError) throw linesError;
+
+        // Clone our active recipes array to maintain immutable state tracking rules
+        let workingRecipesCopy = JSON.parse(JSON.stringify(recipes || []));
+
+        for (const line of parsedAiLines) {
+          const cleanLineName = line.name ? line.name.trim().toLowerCase() : '';
+          if (!cleanLineName) continue;
+
+          const newCost = parseFloat(line.price_per_unit || 0);
+
+          // 1. Update the persistent columns in Postgres
+          await supabase
+            .from('recipe_ingredients')
+            .update({ cost: newCost })
+            .eq('kitchen_id', activeKitchenId)
+            .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
+            
+          await supabase
+            .from('component_ingredients')
+            .update({ cost: newCost })
+            .eq('kitchen_id', activeKitchenId)
+            .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
+
+          // 2. Loop through local React state memory and apply costs instantly
+          workingRecipesCopy = workingRecipesCopy.map(recipe => {
+            if (!recipe.ingredients) return recipe;
+            
+            const updatedIngredients = recipe.ingredients.map(ing => {
+              const targetIngredientName = (ing.name || '').toLowerCase();
+              if (
+                targetIngredientName.includes(cleanLineName) || 
+                cleanLineName.includes(targetIngredientName) ||
+                targetIngredientName.replace(/s$/, '') === cleanLineName.replace(/s$/, '')
+              ) {
+                return { ...ing, cost: newCost };
+              }
+              return ing;
+            });
+
+            return { ...recipe, ingredients: updatedIngredients };
+          });
+        }
+
+        // 3. Fire the hook update down from line 174 into your global app state cache
+        if (onUpdateRecipes) {
+          onUpdateRecipes(workingRecipesCopy);
+        }
       }
 
-      // 6. Refresh state log downstream
-      const recordToAppend = savedInvoice || { id: Date.now(), ...newInvoiceRow };
-      if (onUpdate) {
-        onUpdate([...safeInvoices, recordToAppend]);
-      }
-
-      alert(`AI Extraction Success: Parent invoice & ${parsedAiLines.length} layout rows successfully pushed into your kitchen schema tab!`);
-      setPreviewUrl(null);
-
-    } catch (err) {
-      console.error("Supabase Database Pipeline Fault:", err);
-      alert("Error processing transaction layout rows: " + err.message);
-    } finally {
-      setIsProcessing(false);
+    // 7. Refresh your app's global or screen state with a fresh fetch query
+    if (onUpdate && savedInvoice) {
+      onUpdate([...safeInvoices, savedInvoice]);
     }
-  };
+
+    alert("Success! Matched recipe costs updated for your active workspace.");
+    setPreviewUrl(null);
+    setFile(null);
+
+  } catch (err) {
+    console.error(err);
+    alert("Failed running image pipeline: " + err.message);
+  } finally {
+    setParsing(false);
+  }
+}
 
   return (
     <div style={S.container}>
-      <ScreenHeader title="AI Relational Invoice Processing Matrix" sub="Perform multi-tenant table row insertions mapping complex parent-child invoice items" />
+      <ScreenHeader title="AI Invoice Processing" sub="Digitize physical supplier delivery notes directly into structured recipe costings" />
       
-      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:20}}>
-        
-        {/* Left Side: Inputs and active text extractions */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={S.card}>
-          <SectionLabel label="Optical Asset Feed Input" />
-          <div style={{display:"flex", gap:10, marginTop:14, marginBottom:16}}>
-            <button onClick={() => fileInputRef.current?.click()} style={S.btn}>📂 Choose Snapshot File</button>
-            <button onClick={startLiveCamera} style={S.btnAccent}>📷 Open Document Camera</button>
-            <input type="file" ref={fileInputRef} accept="image/*" onChange={handleFileUpload} style={{display:"none"}} />
+          <SectionLabel label="Capture Feed Input" />
+          
+          <input 
+            type="file" 
+            accept="image/*" 
+            ref={fileInputRef} 
+            onChange={handleFileChange} 
+            style={{ display: 'none' }} 
+            disabled={parsing} 
+          />
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 10, marginBottom: 20 }}>
+            <button 
+              onClick={() => fileInputRef.current?.click()} 
+              disabled={parsing}
+              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
+            >
+              📁 Choose File
+            </button>
+            <button 
+              onClick={startCamera} 
+              disabled={parsing}
+              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
+            >
+              📷 Open Camera
+            </button>
           </div>
 
-          {useLiveCamera && (
-            <div style={{position:"relative", background:C.ink, overflow:"hidden", borderRadius:4, marginBottom:14}}>
-              <video ref={videoRef} autoPlay playsInline style={{width:"100%", display:"block"}} />
-              <button onClick={capturePhoto} style={{position:"absolute", bottom:12, left:"50%", transform:"translateX(-50%)", padding:"8px 16px", background:C.red, color:"white", border:"none", fontWeight:700, cursor:"pointer"}}>
-                SNAP INVOICE TEXT
-              </button>
+          {cameraActive && (
+            <div style={{ marginBottom: 20, border: `1px solid ${C.inkRule}`, background: '#000', padding: 8, textAlign: 'center' }}>
+              <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxHeight: 300, objectFit: 'cover' }} />
+              <button onClick={captureSnapshot} style={{ ...S.btnAccent, width: '100%', marginTop: 8 }}>📸 CAPTURE TARGET REGION</button>
             </div>
           )}
 
-          {previewUrl && !useLiveCamera && (
-            <div style={{textAlign:"center", background:C.paper, padding:14, border:`1px dashed ${C.inkFade}`, borderRadius:4}}>
-              <img src={previewUrl} alt="Document Extract Preview" style={{maxWidth:"100%", maxHeight:240, border:`1px solid ${C.inkRule}`}} />
-              <button onClick={processInvoiceWithAiAndSupabase} disabled={isProcessing} style={{...S.btnAccent, width:"100%", marginTop:14, background:C.green}}>
-                {isProcessing ? "CONSTRUCTING SCHEMA RELATIONSHIPS..." : "⚡ PARSE TEXT & COMMMIT TO TABLES"}
-              </button>
+          {previewUrl && !cameraActive && (
+            <div style={{ padding: '12px', background: C.highlight, borderRadius: 4, marginBottom: 16, textAlign: 'center', fontSize: 13, border: `1px solid ${C.paper2}` }}>
+              {file ? `📎 File queued: ${file.name}` : "📸 Camera capture queued successfully"}
             </div>
           )}
-          <canvas ref={canvasRef} style={{display:"none"}} />
 
-          {activeInvoice && (
-            <div style={{marginTop:20, paddingTop:20, borderTop:`1px dashed ${C.paper2}`}}>
-              <div style={{fontWeight:700, marginBottom:10, fontSize:14, color:C.accent}}>Active Line Records View for: {activeInvoice.ref}</div>
-              <div style={{display:"flex", flexDirection:"column", gap:6}}>
-                {activeLines.length === 0 ? (
-                  <div style={{fontSize:12, color:C.inkFade, fontStyle:"italic"}}>Fetching linked items...</div>
-                ) : (
-                  activeLines.map(line => (
-                    <div key={line.id} style={{display:"flex", justifyContent:"space-between", background:"white", padding:"6px 10px", fontSize:13, border:`1px solid ${C.paper2}`}}>
-                      <div>{line.name} (x{line.qty}{line.unit})</div>
-                      <div style={{fontFamily:"monospace", fontWeight:700}}>£{parseFloat(line.line_total).toFixed(2)}</div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
+          <button 
+            onClick={handleParseAndCommit} 
+            disabled={parsing || !previewUrl}
+            style={{ ...S.btnAccent, width: '100%', marginTop: 12, padding: '14px 20px', fontWeight: 700 }}
+          >
+            {parsing ? "ANALYZING IMAGES VIA CLOUD AI COMPILER..." : "⚡ PARSE TEXT & UPDATE COST MATRICES"}
+          </button>
         </div>
 
-        {/* Right Side: Ledger Logging */}
         <div style={S.card}>
           <SectionLabel label="Historical Tenant Document Logs (public.invoices)" />
-          <div style={{display:"flex", flexDirection:"column", gap:10, marginTop:14}}>
+          <div style={{ overflowY: 'auto', maxHeight: 300, marginTop: 12 }}>
             {safeInvoices.length === 0 ? (
-              <div style={{padding:12, color:C.inkFade, fontStyle:'italic'}}>No relational document nodes encountered within system ledger.</div>
+              <p style={{ fontSize: 12, color: C.inkFade, fontStyle: 'italic' }}>No processed items mapped inside local ledger frame cache.</p>
             ) : (
-              safeInvoices.map(inv => (
-                <div key={inv.id} onClick={() => handleSelectInvoice(inv)} style={{padding:12, border:`1px solid ${C.paper2}`, background: activeInvoice?.id === inv.id ? C.highlight : 'white', cursor:"pointer"}}>
-                  <div style={{display:"flex", justifyContent:"space-between", fontWeight:700}}>
-                    <div>{inv.supplier} ({inv.ref || "No Ref"})</div>
-                    <div>£{(inv.total || 0).toFixed(2)}</div>
+              safeInvoices.map((inv) => (
+                <div key={inv.id} style={{ padding: '10px 12px', background: C.highlight, borderBottom: `1px solid ${C.paper2}`, marginBottom: 6, borderLeft: `3px solid ${C.accent}` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 14 }}>
+                    <span>{inv.supplier}</span>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>£{parseFloat(inv.total || 0).toFixed(2)}</span>
                   </div>
-                  <div style={{display:"flex", justifyContent:"space-between", fontSize:11, color:C.inkFade, marginTop:4}}>
-                    <div>Filed: {inv.inv_date || inv.date} · {inv.lines || 0} columns items</div>
-                    <div style={{color: C.green, fontWeight:700}}>{inv.status.toUpperCase()}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.inkFade, marginTop: 4 }}>
+                    <span>Ref: {inv.ref} · {inv.lines || 0} column items</span>
+                    <span>Filed: {inv.inv_date}</span>
                   </div>
                 </div>
               ))
             )}
           </div>
         </div>
-
       </div>
     </div>
   );
@@ -1237,18 +1280,17 @@ function PosScreen({ sales, recipes, onUpdate }) {
   );
 }
 
-function ScanScreen({ recipes, onUpdate }) {
-  const [file, setFile] = useState(null);
+function ScanScreen({ recipes = [], onUpdateRecipes }) {
   const [previewUrl, setPreviewUrl] = useState(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [useLiveCamera, setUseLiveCamera] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
   const [scannedData, setScannedData] = useState(null);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Stop camera tracks gracefully if component unmounts or user switches tabs
+  const safeRecipes = recipes || [];
+
   useEffect(() => {
     return () => {
       if (videoRef.current && videoRef.current.srcObject) {
@@ -1258,184 +1300,169 @@ function ScanScreen({ recipes, onUpdate }) {
     };
   }, []);
 
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      setPreviewUrl(URL.createObjectURL(selectedFile));
-      setUseLiveCamera(false);
-      setScannedData(null);
-    }
-  };
-
-  const startLiveWebcam = async () => {
-    setUseLiveCamera(true);
-    setFile(null);
-    setPreviewUrl(null);
+  const startLiveCamera = async () => {
     setScannedData(null);
+    setPreviewUrl(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "environment" } 
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
     } catch (err) {
-      console.error("Camera access failed: ", err);
-      alert("Unable to access live webcam stream. Please utilize 'File Upload / Smartphone Snap' to take or choose photos.");
-      setUseLiveCamera(false);
+      console.error("Camera setup failed:", err);
+      alert("Unable to open hardware camera. Falling back to File Capture alternative mode.");
     }
   };
 
-  const captureWebcamPhoto = () => {
+  const capturePhoto = () => {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
-      
       const ctx = canvas.getContext("2d");
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg");
-        setPreviewUrl(dataUrl);
-        
+        setPreviewUrl(canvas.toDataURL("image/jpeg"));
         const stream = video.srcObject;
         if (stream) {
           stream.getTracks().forEach(track => track.stop());
         }
-        setUseLiveCamera(false);
-        
-        fetch(dataUrl)
-          .then(res => res.blob())
-          .then(blob => {
-            const mockFile = new File([blob], "camera_capture.jpg", { type: "image/jpeg" });
-            setFile(mockFile);
-          });
       }
     }
   };
 
-  const runOcrAnalysis = () => {
+  const executeRecipeDigitizer = async () => {
     if (!previewUrl) return;
-    setIsScanning(true);
-    setTimeout(() => {
-      setIsScanning(false);
-      setScannedData(DEMO_RECIPE_SCAN);
-    }, 1200);
+    setIsExtracting(true);
+
+    try {
+      const { data: member } = await supabase.from('kitchen_members').select('kitchen_id').limit(1).single();
+      if (!member) throw new Error("No kitchen session found.");
+
+      // Preserved Baseline Validation Testing Dataset
+      const simulatedRecipeOutput = {
+        name: "Sinigang Pork Belly",
+        category: "Main",
+        sell_price: 18.50,
+        ingredients: [
+          { name: "Beef Cheek", cost: 13.50, qty: 5, unit: "kg", supplier: "Wellocks Market" },
+          { name: "Salmon Fillet", cost: 17.50, qty: 2, unit: "kg", supplier: "Wellocks Market" }
+        ]
+      };
+
+      setScannedData(simulatedRecipeOutput);
+    } catch (err) {
+      alert("Error scanning configuration: " + err.message);
+    } finally {
+      setIsExtracting(false);
+    }
   };
 
-  const acceptScan = () => {
+  const acceptScan = async () => {
     if (!scannedData) return;
-    const nextRecipe = {
-      id: Date.now(),
-      name: scannedData.name,
-      category: scannedData.category,
-      sellPrice: scannedData.sellPrice,
-      dietary: scannedData.dietary,
-      ingredients: scannedData.ingredients.map(i => ({ 
-        kind: 'raw', 
-        name: i.name, 
-        qty: i.qty, 
-        unit: i.unit, 
-        cost: i.cost, 
-        supplier: i.supplier 
-      }))
-    };
-    onUpdate([...recipes, nextRecipe]);
-    setFile(null);
-    setPreviewUrl(null);
-    setScannedData(null);
-    alert("Invoice recipe data successfully committed to master library ledger!");
+    try {
+      const { data: member } = await supabase.from('kitchen_members').select('kitchen_id').limit(1).single();
+      if (!member) throw new Error("No active kitchen tenant context found.");
+
+      // 1. Write parent row to public.recipes
+      const { data: rData, error: rError } = await supabase
+        .from('recipes')
+        .insert([{
+          kitchen_id: member.kitchen_id,
+          name: scannedData.name,
+          category: scannedData.category,
+          sell_price: scannedData.sell_price,
+          dietary: []
+        }]).select();
+
+      if (rError) throw rError;
+      const createdRecipe = rData?.[0];
+
+      // 2. Map split row objects to public.recipe_ingredients relational children
+      if (createdRecipe) {
+        const ingredientsRows = scannedData.ingredients.map((ing, idx) => ({
+          kitchen_id: member.kitchen_id,
+          recipe_id: createdRecipe.id,
+          position: idx,
+          kind: 'raw',
+          name: ing.name,
+          cost: ing.cost,
+          qty: ing.qty,
+          unit: ing.unit,
+          supplier: ing.supplier
+        }));
+
+        const { error: ingError } = await supabase.from('recipe_ingredients').insert(ingredientsRows);
+        if (ingError) throw ingError;
+
+        if (onUpdateRecipes) {
+          onUpdateRecipes([...safeRecipes, { ...createdRecipe, ingredients: ingredientsRows }]);
+        }
+        alert(`Success: "${scannedData.name}" committed to relational master library ledger tables!`);
+        setPreviewUrl(null);
+        setScannedData(null);
+      }
+    } catch (err) {
+      alert("Error saving recipe rows: " + err.message);
+    }
   };
 
   return (
     <div style={S.container}>
-      <ScreenHeader title="Recipe Imaging & Digitization" sub="Utilize standard image matching algorithms to convert handwritten or typed formula sheets" />
-      
+      <ScreenHeader title="AI Recipe Digitizer Pipeline" sub="Upload structural spec sheets or image snapshots to build formulation databases automatically" />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        {/* Left Interactive Control Box */}
+        
         <div style={S.card}>
-          <SectionLabel label="Capture Interface Selection" />
-          <div style={{ display: "flex", gap: 10, marginTop: 14, marginBottom: 20 }}>
-            <button 
-              onClick={() => fileInputRef.current?.click()} 
-              style={S.btnAccent}
-            >
-              📂 File Upload / Smartphone Snap
-            </button>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              accept="image/*" 
-              onChange={handleFileChange} 
-              style={{ display: "none" }} 
-            />
-            <button 
-              onClick={startLiveWebcam} 
-              style={{ ...S.btn, backgroundColor: C.paper2 }}
-            >
-              📷 Open Document Camera
-            </button>
+          <SectionLabel label="Optical Formulation Feed Input" />
+          <div style={{ display: "flex", gap: 10, marginTop: 14, marginBottom: 16 }}>
+            <button onClick={() => fileInputRef.current?.click()} style={S.btn}>📂 Choose Snapshot File</button>
+            <button onClick={startLiveCamera} style={S.btnAccent}>📷 Open document camera</button>
+            <input type="file" ref={fileInputRef} accept="image/*" style={{ display: "none" }} onChange={e => {
+              const f = e.target.files?.[0];
+              if (f) setPreviewUrl(URL.createObjectURL(f));
+              setScannedData(null);
+            }} />
           </div>
 
-          {/* Webcam Element Frame */}
-          {useLiveCamera && (
-            <div style={{ position: "relative", width: "100%", backgroundColor: C.ink, borderRadius: 4, overflow: "hidden", marginBottom: 14 }}>
-              <video ref={videoRef} autoPlay playsInline style={{ width: "100%", display: "block" }} />
-              <button 
-                onClick={captureWebcamPhoto} 
-                style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", padding: "10px 20px", background: C.red, color: "#fff", border: "none", fontWeight: "bold", cursor: "pointer", borderRadius: 4 }}
-              >
-                📸 TAKE SNAPSHOT
-              </button>
-              <canvas ref={canvasRef} style={{ display: "none" }} />
-            </div>
-          )}
-
-          {/* Selected Document Render Window */}
-          {previewUrl && !useLiveCamera && (
-            <div style={{ textAlign: "center", padding: 20, backgroundColor: C.paper, border: `1px dashed ${C.inkFade}`, borderRadius: 4, marginBottom: 14 }}>
-              <img src={previewUrl} alt="Target Document Layout" style={{ maxWidth: "100%", maxHeight: 280, border: `1px solid ${C.inkRule}` }} />
-            </div>
-          )}
-
           {previewUrl && (
-            <button 
-              onClick={runOcrAnalysis} 
-              disabled={isScanning} 
-              style={{ ...S.btnAccent, width: "100%", padding: 12, background: C.blue, color: "#fff" }}
-            >
-              {isScanning ? "PROCESSING IMAGE DATA BASELINING..." : "⚡ RUN IMAGE OCR PARSER ENGINE"}
-            </button>
+            <div style={{ marginTop: 20, padding: 20, background: C.paper, borderRadius: 4, border: `1px dashed ${C.inkFade}`, textAlign: "center" }}>
+              <img src={previewUrl} alt="Preview" style={{ maxHeight: 240, maxWidth: "100%", marginBottom: 14, border: `1px solid ${C.inkRule}` }} />
+              <button onClick={executeRecipeDigitizer} disabled={isExtracting} style={{ ...S.btnAccent, width: "100%", background: C.blue, color: "white" }}>
+                {isExtracting ? "EXTRACTING FORMULATION ARRAYS..." : "⚡ RUN IMAGE OCR PARSER ENGINE"}
+              </button>
+            </div>
           )}
+          <canvas ref={canvasRef} style={{ display: "none" }} />
         </div>
 
-        {/* Right Digital Layout Feed */}
         <div>
           {scannedData ? (
             <div style={S.card}>
               <SectionLabel label="Parsed Formulation Structural Context" />
               <h2 style={{ fontFamily: "'Bitter', serif", margin: "14px 0 6px 0" }}>{scannedData.name}</h2>
               <div style={{ fontSize: 13, color: C.inkFade, marginBottom: 14 }}>
-                Category: {scannedData.category} · Intended Retail: £{scannedData.sellPrice}
+                Category: {scannedData.category} · Intended Retail: £{scannedData.sell_price.toFixed(2)}
               </div>
-              <ul style={{ paddingLeft: 20, fontSize: 13, display: "flex", flexDirection: "column", gap: 4, margin: "0 0 20px 0" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
                 {scannedData.ingredients.map((ing, i) => (
-                  <li key={i}><strong>{ing.qty} {ing.unit}</strong> - {ing.name}</li>
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", background: "white", padding: "8px 12px", border: `1px solid ${C.paper2}`, fontSize: 13 }}>
+                    <div><strong>{ing.qty} {ing.unit}</strong> - {ing.name}</div>
+                    <div style={{ color: C.accent, fontWeight: 700 }}>£{ing.cost.toFixed(2)} / {ing.unit}</div>
+                  </div>
                 ))}
-              </ul>
-              <button onClick={acceptScan} style={{ ...S.btnAccent, width: "100%" }}>
-                Commit To Recipe Library
+              </div>
+              <button onClick={acceptScan} style={{ ...S.btnAccent, width: "100%", background: C.green }}>
+                Commit to Recipe Library
               </button>
             </div>
           ) : (
             <div style={{ ...S.card, textAlign: "center", padding: 60, color: C.inkFade }}>
-              {isScanning ? "Extracting composition matrix rows..." : "OCR Parser state idle. Pipeline uninitialized."}
+              OCR Parser state idle. Pipeline uninitialized.
             </div>
           )}
         </div>
+
       </div>
     </div>
   );
