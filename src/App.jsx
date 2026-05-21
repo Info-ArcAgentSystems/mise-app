@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
-import { useAuth } from "./components/AuthContext.jsx";
+import { useAuth } from "./components/AuthContext.jsx"; // Must point to AuthContext
 import { useKitchenState } from "./hooks/useKitchenState.js";
 import LoginScreen from "./components/AuthContext.jsx";
 import Auth from "./components/AuthContext.jsx";
 import { supabase } from "./lib/supabase.js";
+
 
 const C = {
   paper: '#f7f1e3',
@@ -28,9 +29,6 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [tab, setTab] = useState('dashboard');
   const [drawerOpen, setDrawerOpen] = useState(false);
-  
-  // 1. Mobile screen state listener (keeps functions completely intact)
-  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth <= 768 : false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -42,16 +40,10 @@ export default function App() {
       setSession(session);
     });
 
-    // Handle screen resizing smoothly on mobile phone viewports
-    const handleResize = () => setIsMobile(window.innerWidth <= 768);
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      subscription.unsubscribe();
-      window.removeEventListener('resize', handleResize);
-    };
+    return () => subscription.unsubscribe();
   }, []);
 
+  // Pass user profile details downstream to initialize state
   const [state, update, loaded] = useKitchenState(session?.user?.id);
 
   const handleSignOut = async () => {
@@ -72,8 +64,9 @@ export default function App() {
     return <Auth />;
   }
 
-  if (!loaded) return <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh',background:C.paper,color:C.ink,fontFamily:'sans-serif'}}>Synchronizing Kitchen Ledger...</div>;
+ if (!loaded) return <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh',background:C.paper,color:C.ink,fontFamily:'sans-serif'}}>Synchronizing Kitchen Ledger...</div>;
 
+  // Deconstruct state with safety defaults pointing to standard structural blocks
   const {
     recipes = [],
     components = [],
@@ -102,100 +95,42 @@ export default function App() {
   ];
 
   return (
-    <div style={{ 
-      ...S.layout, 
-      display: 'flex', 
-      flexDirection: isMobile ? 'column' : 'row', 
-      minHeight: '100vh' 
-    }}>
-      {/* 2. Global CSS overrides to optimize child screens for mobile without changing their original code/colors */}
-      <style>{`
-        @media (max-width: 768px) {
-          /* Prevent layout blowout */
-          body, #root { overflow-x: hidden; }
-          
-          /* Force standard grids and multi-columns to stack vertically on mobile */
-          div[style*="display: grid"], div[style*="display:grid"] {
-            grid-template-columns: 1fr !important;
-          }
-          
-          /* Keep KPI grids clean by splitting into 2 rows of 2 columns instead of 1 compressed row */
-          div[style*="kpiGrid"] {
-            grid-template-columns: repeat(2, 1fr) !important;
-            gap: 12px !important;
-          }
-
-          /* Prevent data tables from breaking layouts by introducing horizontal swipe controls */
-          div[style*="overflowX"], table {
-            display: block !important;
-            width: 100% !important;
-            overflow-x: auto !important;
-            white-space: nowrap !important;
-          }
-
-          /* Ensure action forms and filters wrap on narrow screens */
-          div[style*="display: flex"], div[style*="display:flex"] {
-            flex-wrap: wrap;
-          }
-          
-          /* Form input controls should conform to phone screen widths */
-          input, select, textarea {
-            max-width: 100% !important;
-            box-sizing: border-box !important;
-          }
-        }
-      `}</style>
-
-      {/* Desktop Sidebar Layout - hidden gracefully on mobile views */}
-      {!isMobile && (
-        <aside style={S.sidebar}>
-          <div style={S.logoArea}>
-            <div style={S.logoIcon}>皿</div>
-            <div>
-              <div style={S.logoText}>MISE</div>
-              <div style={S.logoSub}>{settings.role}</div>
-            </div>
+    <div style={S.layout}>
+      {/* Desktop Sidebar Layout */}
+      <aside style={S.sidebar}>
+        <div style={S.logoArea}>
+          <div style={S.logoIcon}>皿</div>
+          <div>
+            <div style={S.logoText}>MISE</div>
+            <div style={S.logoSub}>{settings.role}</div>
           </div>
-     
-          <nav style={S.nav}>
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                style={{ ...S.navLink, ...(tab === t.id ? S.navLinkActive : {}) }}
-              >
-                {t.label}
-              </button>
-            ))}
-          </nav>
-          <div style={S.sidebarFooter}>
-            <div style={{ fontSize: 11, color: C.inkFade, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {session.user.email}
-            </div>
-        
-            <button onClick={handleSignOut} style={S.signOutBtn}>
-              Leave Station
-            </button>
-          </div>
-        </aside>
-      )}
-
-      {/* Mobile Top Bar - explicitly visible on mobile viewports */}
-      {isMobile && (
-        <div style={{ 
-          ...S.mobileBar, 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
-          padding: '12px 16px', 
-          background: C.ink, 
-          color: C.paper,
-          borderBottom: `1px solid ${C.inkRule}`
-        }}>
-          <div style={{ fontFamily: "'Bitter', serif", fontWeight: 900, fontSize: 18, color: C.paper }}>MISE</div>
-          <button onClick={() => setDrawerOpen(true)} style={{ ...S.menuBtn, padding: '6px 12px', background: C.accent, color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Menu</button>
         </div>
-      )}
+        <nav style={S.nav}>
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              style={{ ...S.navLink, ...(tab === t.id ? S.navLinkActive : {}) }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        <div style={S.sidebarFooter}>
+          <div style={{ fontSize: 11, color: C.inkFade, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {session.user.email}
+          </div>
+          <button onClick={handleSignOut} style={S.signOutBtn}>
+            Leave Station
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Top Bar */}
+      <div style={S.mobileBar}>
+        <div style={{ fontFamily: "'Bitter', serif", fontWeight: 900, fontSize: 18 }}>MISE</div>
+        <button onClick={() => setDrawerOpen(true)} style={S.menuBtn}>Menu</button>
+      </div>
 
       {/* Mobile Responsive Nav Drawer */}
       {drawerOpen && (
@@ -226,14 +161,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Render Active Functional Screens with mobile layout spacing adjustments */}
-      <div style={{ 
-        ...S.main, 
-        marginLeft: isMobile ? 0 : S.main?.marginLeft || 0,
-        padding: isMobile ? '16px 12px' : S.main?.padding || '24px',
-        width: '100%',
-        boxSizing: 'border-box'
-      }}>
+      {/* Render Active Functional Screens */}
+      <div style={S.main}>
         {tab === 'dashboard' && <Dashboard recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
         {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={(val) => update({ planner: val })} />}
         {tab === 'recipes' && <RecipesScreen recipes={recipes} components={components} settings={settings} onUpdateRecipes={(val) => update({ recipes: val })} onUpdateComponents={(val) => update({ components: val })} />}
@@ -939,147 +868,83 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsing, setParsing] = useState(false);
 
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
-  const [cameraActive, setCameraActive] = useState(false);
 
   const safeInvoices = invoices || [];
   const safeRecipes = recipes || [];
-
-  const startCamera = async () => {
-    try {
-      setCameraActive(true);
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      alert(`Hardware Camera Stream Error: ${err.message}`);
-      setCameraActive(false);
-    }
-  };
-
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = videoRef.current.srcObject.getTracks();
-      tracks.forEach(track => track.stop());
-    }
-    setCameraActive(false);
-  };
-
-  const captureSnapshot = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    const maxDimension = 1200;
-    let width = video.videoWidth;
-    let height = video.videoHeight;
-    if (width > maxDimension || height > maxDimension) {
-      if (width > height) {
-        height = Math.round((height * maxDimension) / width);
-        width = maxDimension;
-      } else {
-        width = Math.round((width * maxDimension) / height);
-        height = maxDimension;
-      }
-    }
-
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, width, height);
-    
-    const dataUrl = canvas.toDataURL("image/jpeg");
-    setPreviewUrl(dataUrl);
-    
-    fetch(dataUrl)
-      .then(res => res.blob())
-      .then(blob => {
-        const mockFile = new File([blob], `cam_capture_${Date.now()}.jpg`, { type: "image/jpeg" });
-        setFile(mockFile);
-      });
-
-    stopCamera();
-  };
 
   const handleFileChange = (e) => {
     const selected = e.target.files[0];
     if (!selected) return;
     setFile(selected);
     setPreviewUrl(URL.createObjectURL(selected));
-    stopCamera();
   };
 
-  // ADDED ASYNC HERE — fixes all 7 compiler build errors
   const handleParseAndCommit = async () => {
-  if (!previewUrl) {
-    alert("Please capture or choose a valid invoice image file.");
-    return;
-  }
-
-  setParsing(true);
-
-  try {
-    // 1. DYNAMICALLY FETCH THE LOGGED-IN USER'S ASSIGNED KITCHEN ID
-    // This looks up the active tenant context from the membership registry table
-    const { data: memberData, error: memberError } = await supabase
-      .from('kitchen_members')
-      .select('kitchen_id')
-      .limit(1)
-      .single();
-
-    if (memberError || !memberData) {
-      throw new Error("Could not find an assigned kitchen workspace for this account.");
+    if (!previewUrl) {
+      alert("Please capture or choose a valid invoice image file.");
+      return;
     }
-    
-    // Assign the dynamic workspace ID to a safe variable
-    const activeKitchenId = memberData.kitchen_id;
 
-    // 2. Format image asset data payload
-    const targetBlob = await fetch(previewUrl).then(res => res.blob());
-    const base64String = await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result.split(',')[1]);
-      reader.readAsDataURL(targetBlob);
-    });
+    setParsing(true);
 
-    // 3. Trigger your edge function compiler pipeline
-    const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
-      method: "POST",
-      body: {
-        imageBase64: base64String,
-        fileType: file?.type || "image/jpeg",
-        fileName: file?.name || "camera_capture.jpg"
+    try {
+      // 1. DYNAMICALLY FETCH THE LOGGED-IN USER'S ASSIGNED KITCHEN ID
+      const { data: memberData, error: memberError } = await supabase
+        .from('kitchen_members')
+        .select('kitchen_id')
+        .limit(1)
+        .single();
+
+      if (memberError || !memberData) {
+        throw new Error("Could not find an assigned kitchen workspace for this account.");
       }
-    });
+      
+      const activeKitchenId = memberData.kitchen_id;
 
-    if (edgeFunctionError || !aiExtractedData) {
-      throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
-    }
+      // 2. Format image asset data payload
+      const targetBlob = await fetch(previewUrl).then(res => res.blob());
+      const base64String = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(targetBlob);
+      });
 
-    const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
-    const detectedTotal = parseFloat(aiExtractedData.total) || 0;
-    const parsedAiLines = aiExtractedData.lines || [];
+      // 3. Trigger your edge function compiler pipeline
+      const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
+        method: "POST",
+        body: {
+          imageBase64: base64String,
+          fileType: file?.type || "image/jpeg",
+          fileName: file?.name || "camera_capture.jpg"
+        }
+      });
 
-    // 4. Save main invoice document log under the dynamic kitchen ID
-    const { data: invData, error: invError } = await supabase
-      .from('invoices')
-      .insert([{
-        kitchen_id: activeKitchenId,
-        supplier: detectedSupplier,
-        ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
-        inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
-        total: detectedTotal,
-        lines: parsedAiLines.length,
-        status: "filed"
-      }]).select();
+      if (edgeFunctionError || !aiExtractedData) {
+        throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
+      }
 
-    if (invError) throw invError;
-    const savedInvoice = invData?.[0];
+      const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
+      const detectedTotal = parseFloat(aiExtractedData.total) || 0;
+      const parsedAiLines = aiExtractedData.lines || [];
 
-    if (savedInvoice && parsedAiLines.length > 0) {
+      // 4. Save main invoice document log under the dynamic kitchen ID
+      const { data: invData, error: invError } = await supabase
+        .from('invoices')
+        .insert([{
+          kitchen_id: activeKitchenId,
+          supplier: detectedSupplier,
+          ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
+          inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
+          total: detectedTotal,
+          lines: parsedAiLines.length,
+          status: "filed"
+        }]).select();
+
+      if (invError) throw invError;
+      const savedInvoice = invData?.[0];
+
+      if (savedInvoice && parsedAiLines.length > 0) {
         const linesToInsert = parsedAiLines.map((line, idx) => ({
           kitchen_id: activeKitchenId,
           invoice_id: savedInvoice.id,
@@ -1098,7 +963,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
         if (linesError) throw linesError;
 
-        // Clone our active recipes array to maintain immutable state tracking rules
         let workingRecipesCopy = JSON.parse(JSON.stringify(recipes || []));
 
         for (const line of parsedAiLines) {
@@ -1107,7 +971,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
           const newCost = parseFloat(line.price_per_unit || 0);
 
-          // 1. Update the persistent columns in Postgres
           await supabase
             .from('recipe_ingredients')
             .update({ cost: newCost })
@@ -1120,7 +983,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
             .eq('kitchen_id', activeKitchenId)
             .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
 
-          // 2. Loop through local React state memory and apply costs instantly
           workingRecipesCopy = workingRecipesCopy.map(recipe => {
             if (!recipe.ingredients) return recipe;
             
@@ -1140,28 +1002,26 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
           });
         }
 
-        // 3. Fire the hook update down from line 174 into your global app state cache
         if (onUpdateRecipes) {
           onUpdateRecipes(workingRecipesCopy);
         }
       }
 
-    // 7. Refresh your app's global or screen state with a fresh fetch query
-    if (onUpdate && savedInvoice) {
-      onUpdate([...safeInvoices, savedInvoice]);
+      if (onUpdate && savedInvoice) {
+        onUpdate([...safeInvoices, savedInvoice]);
+      }
+
+      alert("Success! Matched recipe costs updated for your active workspace.");
+      setPreviewUrl(null);
+      setFile(null);
+
+    } catch (err) {
+      console.error(err);
+      alert("Failed running image pipeline: " + err.message);
+    } finally {
+      setParsing(false);
     }
-
-    alert("Success! Matched recipe costs updated for your active workspace.");
-    setPreviewUrl(null);
-    setFile(null);
-
-  } catch (err) {
-    console.error(err);
-    alert("Failed running image pipeline: " + err.message);
-  } finally {
-    setParsing(false);
-  }
-}
+  };
 
   return (
     <div style={S.container}>
@@ -1171,6 +1031,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
         <div style={S.card}>
           <SectionLabel label="Capture Feed Input" />
           
+          {/* Hidden input field allowing all file methods without skipping the iPhone menu prompt */}
           <input 
             type="file" 
             accept="image/*" 
@@ -1181,32 +1042,19 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
           />
 
           <div style={{ display: 'flex', gap: 10, marginTop: 10, marginBottom: 20 }}>
+            {/* Unified action button triggering native action options sheets on mobile devices */}
             <button 
               onClick={() => fileInputRef.current?.click()} 
               disabled={parsing}
-              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
+              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700, padding: '14px' }}
             >
-              📁 Choose File
-            </button>
-            <button 
-              onClick={startCamera} 
-              disabled={parsing}
-              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
-            >
-              📷 Open Camera
+              📷 Choose File / Take Photo
             </button>
           </div>
 
-          {cameraActive && (
-            <div style={{ marginBottom: 20, border: `1px solid ${C.inkRule}`, background: '#000', padding: 8, textAlign: 'center' }}>
-              <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxHeight: 300, objectFit: 'cover' }} />
-              <button onClick={captureSnapshot} style={{ ...S.btnAccent, width: '100%', marginTop: 8 }}>📸 CAPTURE TARGET REGION</button>
-            </div>
-          )}
-
-          {previewUrl && !cameraActive && (
+          {previewUrl && (
             <div style={{ padding: '12px', background: C.highlight, borderRadius: 4, marginBottom: 16, textAlign: 'center', fontSize: 13, border: `1px solid ${C.paper2}` }}>
-              {file ? `📎 File queued: ${file.name}` : "📸 Camera capture queued successfully"}
+              {file ? `📎 Document queued: ${file.name}` : "📸 Document image queued successfully"}
             </div>
           )}
 
