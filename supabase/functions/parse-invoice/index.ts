@@ -1,32 +1,77 @@
+// @ts-nocheck
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 
-// Centralized reusable CORS headers layout mapping
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-serve(async (req) => {
-  // Handle preflight CORS requests gracefully for browser security
+serve(async (req: any) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')
-    
+    const OPENAI_API_KEY = (Deno as any).env.get('OPENAI_API_KEY')
     if (!OPENAI_API_KEY) {
-      throw new Error("Missing system variable configuration context: OPENAI_API_KEY environment string is not bound inside local running container execution context.")
+      throw new Error("Missing system variable configuration context: OPENAI_API_KEY environment string is not bound.")
     }
 
-    const { imageBase64 } = await req.json()
+    const requestBody = await req.json()
+    console.log("Incoming request body keys:", Object.keys(requestBody));
 
-    if (!imageBase64) {
-      throw new Error("Missing imageBase64 data stream component parameters.")
+    // Dynamically grab whatever data string was sent, regardless of the key name
+    const rawPayload = requestBody.imageBase64 || requestBody.pdfText || requestBody.textContent || Object.values(requestBody)[0];
+
+    if (!rawPayload || String(rawPayload).trim() === "") {
+      throw new Error("Missing file payload data parameters. Component trace stream is empty.")
     }
 
-    console.log("Transmitting asset snapshot layout context directly into OpenAI Vision API...");
+    const cleanPayload = String(rawPayload).trim();
+
+    // Smart Detection: Check if it's a raw text PDF dump or a base64 image string
+    // If it contains spaces, newlines, or common invoice text like "Invoice" or "Total", treat it as text.
+    const isTextPayload = cleanPayload.includes("\n") || 
+                          cleanPayload.includes(" ") || 
+                          cleanPayload.toLowerCase().includes("invoice") || 
+                          cleanPayload.toLowerCase().includes("total");
+
+    let promptContentMessage = []
+
+    if (isTextPayload) {
+      console.log("Smart parser detected: Text/PDF document dump layout.");
+      promptContentMessage = [
+        {
+          type: "text",
+          text: `Extract invoice matrix line details from this structural data text block:
+          
+          ${cleanPayload}
+          
+          Return a valid JSON object with EXACTLY these keys: 'supplier' (string), 'total' (number), and 'lines' (array of objects containing 'name', 'qty', 'unit', 'price_per_unit', and 'line_total'). Do not write markdown code blocks, just return raw JSON structural parameters.`
+        }
+      ]
+    } else {
+      console.log("Smart parser detected: Base64 image payload target stream.");
+      let cleanBase64 = cleanPayload;
+      if (cleanBase64.includes("base64,")) {
+        cleanBase64 = cleanBase64.split("base64,").pop();
+      }
+      cleanBase64 = cleanBase64.trim();
+
+      promptContentMessage = [
+        { 
+          type: "text", 
+          text: "Extract item details from this food invoice image. Return a valid JSON object with EXACTLY these keys: 'supplier' (string), 'total' (number), and 'lines' (array of objects containing 'name', 'qty', 'unit', 'price_per_unit', and 'line_total'). Do not write markdown blocks, just return raw JSON structural parameters." 
+        },
+        {
+          type: "image_url",
+          image_url: { 
+            url: `data:image/jpeg;base64,${cleanBase64}` 
+          }
+        }
+      ]
+    }
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -40,20 +85,10 @@ serve(async (req) => {
         messages: [
           {
             role: "user",
-            content: [
-              { 
-                type: "text", 
-                text: "Extract item details from this food invoice. Return a valid JSON object with EXACTLY these keys: 'supplier' (string), 'total' (number), and 'lines' (array of objects containing 'name', 'qty', 'unit', 'price_per_unit', and 'line_total'). Do not write markdown blocks, just return raw JSON structural parameters." 
-              },
-              {
-                type: "image_url",
-                image_url: { 
-                  url: `data:image/jpeg;base64,${imageBase64}` 
-                }
-              }
-            ]
+            content: promptContentMessage
           }
-        ]
+        ],
+        temperature: 0.1
       })
     })
 
@@ -63,13 +98,12 @@ serve(async (req) => {
       throw new Error(`OpenAI API processing fault: ${aiResult.error.message}`)
     }
 
-    if (!aiResult.choices?.[0]?.message?.content) {
-      throw new Error("OpenAI was unable to extract structural data maps from this canvas snapshot layout.")
+    const content = aiResult.choices?.[0]?.message?.content
+    if (!content) {
+      throw new Error("OpenAI was unable to extract structural data maps from this file document matrix source.")
     }
 
-    const parsedStructuredContent = JSON.parse(aiResult.choices[0].message.content)
-
-    return new Response(JSON.stringify(parsedStructuredContent), {
+    return new Response(content, {
       status: 200,
       headers: { 
         ...corsHeaders,
@@ -77,11 +111,10 @@ serve(async (req) => {
       },
     })
 
-  } catch (error) {
-    console.error("Local Runtime Edge Exception Catch Log Vector:", error.message);
+  } catch (error: any) {
+    console.error("Local Runtime Edge Exception Catch Log Vector:", error?.message || error)
     
-    // Critical fix: Return all corsHeaders here so the UI can safely parse the exact exception string details
-    return new Response(JSON.stringify({ error: error.message }), { 
+    return new Response(JSON.stringify({ error: error?.message || String(error) }), { 
       status: 500,
       headers: { 
         ...corsHeaders,

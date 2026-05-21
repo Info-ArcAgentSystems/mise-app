@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
-import { useAuth } from "./components/AuthContext.jsx"; // Must point to AuthContext
+import { useAuth } from "./components/AuthContext.jsx";
 import { useKitchenState } from "./hooks/useKitchenState.js";
 import LoginScreen from "./components/AuthContext.jsx";
 import Auth from "./components/AuthContext.jsx";
@@ -28,6 +28,9 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [tab, setTab] = useState('dashboard');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  
+  // 1. Mobile screen state listener (keeps functions completely intact)
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth <= 768 : false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -39,10 +42,16 @@ export default function App() {
       setSession(session);
     });
 
-    return () => subscription.unsubscribe();
+    // Handle screen resizing smoothly on mobile phone viewports
+    const handleResize = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      subscription.unsubscribe();
+      window.removeEventListener('resize', handleResize);
+    };
   }, []);
 
-  // Pass user profile details downstream to initialize state
   const [state, update, loaded] = useKitchenState(session?.user?.id);
 
   const handleSignOut = async () => {
@@ -63,9 +72,8 @@ export default function App() {
     return <Auth />;
   }
 
- if (!loaded) return <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh',background:C.paper,color:C.ink,fontFamily:'sans-serif'}}>Synchronizing Kitchen Ledger...</div>;
+  if (!loaded) return <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh',background:C.paper,color:C.ink,fontFamily:'sans-serif'}}>Synchronizing Kitchen Ledger...</div>;
 
-  // Deconstruct state with safety defaults pointing to standard structural blocks
   const {
     recipes = [],
     components = [],
@@ -94,42 +102,100 @@ export default function App() {
   ];
 
   return (
-    <div style={S.layout}>
-      {/* Desktop Sidebar Layout */}
-      <aside style={S.sidebar}>
-        <div style={S.logoArea}>
-          <div style={S.logoIcon}>皿</div>
-          <div>
-            <div style={S.logoText}>MISE</div>
-            <div style={S.logoSub}>{settings.role}</div>
-          </div>
-        </div>
-        <nav style={S.nav}>
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{ ...S.navLink, ...(tab === t.id ? S.navLinkActive : {}) }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-        <div style={S.sidebarFooter}>
-          <div style={{ fontSize: 11, color: C.inkFade, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {session.user.email}
-          </div>
-          <button onClick={handleSignOut} style={S.signOutBtn}>
-            Leave Station
-          </button>
-        </div>
-      </aside>
+    <div style={{ 
+      ...S.layout, 
+      display: 'flex', 
+      flexDirection: isMobile ? 'column' : 'row', 
+      minHeight: '100vh' 
+    }}>
+      {/* 2. Global CSS overrides to optimize child screens for mobile without changing their original code/colors */}
+      <style>{`
+        @media (max-width: 768px) {
+          /* Prevent layout blowout */
+          body, #root { overflow-x: hidden; }
+          
+          /* Force standard grids and multi-columns to stack vertically on mobile */
+          div[style*="display: grid"], div[style*="display:grid"] {
+            grid-template-columns: 1fr !important;
+          }
+          
+          /* Keep KPI grids clean by splitting into 2 rows of 2 columns instead of 1 compressed row */
+          div[style*="kpiGrid"] {
+            grid-template-columns: repeat(2, 1fr) !important;
+            gap: 12px !important;
+          }
 
-      {/* Mobile Top Bar */}
-      <div style={S.mobileBar}>
-        <div style={{ fontFamily: "'Bitter', serif", fontWeight: 900, fontSize: 18 }}>MISE</div>
-        <button onClick={() => setDrawerOpen(true)} style={S.menuBtn}>Menu</button>
-      </div>
+          /* Prevent data tables from breaking layouts by introducing horizontal swipe controls */
+          div[style*="overflowX"], table {
+            display: block !important;
+            width: 100% !important;
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+          }
+
+          /* Ensure action forms and filters wrap on narrow screens */
+          div[style*="display: flex"], div[style*="display:flex"] {
+            flex-wrap: wrap;
+          }
+          
+          /* Form input controls should conform to phone screen widths */
+          input, select, textarea {
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+          }
+        }
+      `}</style>
+
+      {/* Desktop Sidebar Layout - hidden gracefully on mobile views */}
+      {!isMobile && (
+        <aside style={S.sidebar}>
+          <div style={S.logoArea}>
+            <div style={S.logoIcon}>皿</div>
+            <div>
+              <div style={S.logoText}>MISE</div>
+              <div style={S.logoSub}>{settings.role}</div>
+            </div>
+          </div>
+     
+          <nav style={S.nav}>
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                style={{ ...S.navLink, ...(tab === t.id ? S.navLinkActive : {}) }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+          <div style={S.sidebarFooter}>
+            <div style={{ fontSize: 11, color: C.inkFade, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {session.user.email}
+            </div>
+        
+            <button onClick={handleSignOut} style={S.signOutBtn}>
+              Leave Station
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* Mobile Top Bar - explicitly visible on mobile viewports */}
+      {isMobile && (
+        <div style={{ 
+          ...S.mobileBar, 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          padding: '12px 16px', 
+          background: C.ink, 
+          color: C.paper,
+          borderBottom: `1px solid ${C.inkRule}`
+        }}>
+          <div style={{ fontFamily: "'Bitter', serif", fontWeight: 900, fontSize: 18, color: C.paper }}>MISE</div>
+          <button onClick={() => setDrawerOpen(true)} style={{ ...S.menuBtn, padding: '6px 12px', background: C.accent, color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Menu</button>
+        </div>
+      )}
 
       {/* Mobile Responsive Nav Drawer */}
       {drawerOpen && (
@@ -160,8 +226,14 @@ export default function App() {
         </div>
       )}
 
-      {/* Render Active Functional Screens */}
-      <div style={S.main}>
+      {/* Render Active Functional Screens with mobile layout spacing adjustments */}
+      <div style={{ 
+        ...S.main, 
+        marginLeft: isMobile ? 0 : S.main?.marginLeft || 0,
+        padding: isMobile ? '16px 12px' : S.main?.padding || '24px',
+        width: '100%',
+        boxSizing: 'border-box'
+      }}>
         {tab === 'dashboard' && <Dashboard recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
         {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={(val) => update({ planner: val })} />}
         {tab === 'recipes' && <RecipesScreen recipes={recipes} components={components} settings={settings} onUpdateRecipes={(val) => update({ recipes: val })} onUpdateComponents={(val) => update({ components: val })} />}
@@ -170,7 +242,7 @@ export default function App() {
         {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
         {tab === 'waste' && <WasteScreen waste={waste} onUpdate={(val) => update({ waste: val })} />}
         {tab === 'performance' && <PerformanceScreen recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} />}
-        {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={components} sales={sales} waste={waste} />}
+        {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={components} sales={sales} waste={waste} planner={planner} />}
         {tab === 'invoices' && <InvoicesScreen invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} />}
         {tab === 'suppliers' && <SuppliersScreen />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
@@ -857,41 +929,6 @@ function PerformanceScreen({ recipes, components, planner, sales, waste }) {
         <Kpi label="Calculated Cost of Goods" val={`£${report.computedCost.toFixed(2)}`} sub="Theoretical formulation usage" />
         <Kpi label="Variance Leakage" val={`£${report.leakCost.toFixed(2)}`} sub="Filed waste parameters" color={C.red} />
         <Kpi label="Net Operating Yield" val={`${report.finalEfficiencyPct.toFixed(1)}%`} sub="True margin efficiency performance" color={C.green} />
-      </div>
-    </div>
-  );
-}
-
-function SousScreen({ settings, recipes, components, sales, waste }) {
-  const [query, setQuery] = useState('');
-  const [chat, setChat] = useState([{ speaker: 'sous', text: "Awaiting query. I can address menu profitability compression bounds, cross-wholesaler procurement indices, or scaling vulnerabilities." }]);
-
-  const handleSend = (e) => {
-    e.preventDefault();
-    if(!query.trim()) return;
-    const userMessage = { speaker: 'user', text: query };
-    const responseText = sousResponse(query, settings.role);
-    const systemResponse = { speaker: 'sous', text: responseText };
-    setChat([...chat, userMessage, systemResponse]);
-    setQuery('');
-  };
-
-  return (
-    <div style={S.container}>
-      <ScreenHeader title="Sous AI Context Framework" sub="Consult the semantic analysis engine regarding local optimization vectors" />
-      <div style={{...S.card, height:480, display:"flex", flexDirection:"column", background:"#111", color:"#fff", border:`2px solid ${C.inkRule}`}}>
-        <div style={{flex:1, overflowY:"auto", display:"flex", flexDirection:"column", gap:14, padding:16}}>
-          {chat.map((msg, i) => (
-            <div key={i} style={{alignSelf: msg.speaker === 'user' ? 'flex-end' : 'flex-start', maxWidth:"80%", background: msg.speaker === 'user' ? C.accent : '#222', padding:"10px 14px", border:`1px solid ${C.inkRule}`}}>
-              <div style={{fontSize:9, fontFamily:"'JetBrains Mono', monospace", color:"#aaa", marginBottom:4}}>{msg.speaker.toUpperCase()}</div>
-              <div style={{fontSize:13, fontFamily:"'Bitter', serif", lineHeight:1.4}}>{msg.text}</div>
-            </div>
-          ))}
-        </div>
-        <form onSubmit={handleSend} style={{display:"flex", gap:8, borderTop:"1px solid #333", padding:12, background:'#050505'}}>
-          <input type="text" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Submit technical query bounds (e.g., 'margin', 'waste')..." style={{...S.input, background:"#000", color:"#fff", border:"1px solid #333"}} />
-          <button type="submit" style={S.btnAccent}>Query</button>
-        </form>
       </div>
     </div>
   );
@@ -1690,33 +1727,112 @@ const DEMO_RECIPE_SCAN = {
   ]
 };
 
-const SOUS_STUBS = [
-  { match: ["gp", "margin", "profit"], response: "Portfolio GP is sitting below your 70% target. Crème Brûlée and Caesar Salad are the primary drags. Caesar's down because the parmesan and anchovy load is heavy for that plate. Either lift the price or trim the parmesan portion by a third for an immediate win." },
-  { match: ["waste"], response: "Waste tracking pattern indicates leakage from spoilage on mushrooms and lettuce. Tighten tomorrow's order parameters by 20% to stem the variance." },
-  { match: ["shopping", "order", "next"], response: "Looking at your planned covers, bulk proteins are your main expenditure block—primarily for the Bourguignon. Verify your booking roster adjustments before confirming the order list." },
-  { match: ["forecast", "confidence"], response: "The engine is tracking in Blended Mode. Log additional direct sales registers to switch over to full Data-Driven parameters." }
-];
 
-function sousResponse(q, role) {
-  const lower = q.toLowerCase();
-  const prefix = role === "Owner" ? "Boss. " : role === "Head chef" ? "Chef. " : "Heard. ";
-  for (const stub of SOUS_STUBS) {
-    if (stub.match.some(m => lower.includes(m))) return prefix + stub.response;
-  }
-  return prefix + "I can query details regarding profit margins, waste parameters, ordering limits, or spot pricing matrix discrepancies. What are we optimizing?";
-}
+function SousScreen({ settings, recipes, components, sales, waste, planner }) {
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [chat, setChat] = useState([
+    { speaker: 'sous', text: "Chef. Live OpenAI context integration online. Ask me anything about menu costs, cover spikes, wastage tracking, or operational optimizations." }
+  ]);
 
-if (typeof document !== 'undefined') {
-  try {
-    const sheet = document.styleSheets[0] || document.head.appendChild(document.createElement('style')).sheet;
-    sheet.insertRule(`
-      @media (max-width: 768px) {
-        aside { display: none !important; }
-        div[style*="padding: 40px 32px"] { padding: 80px 16px 40px 16px !important; }
-        div[style*="display: none"][style*="position: fixed"] { display: flex !important; }
-      }
-    `, sheet.cssRules.length);
-  } catch (e) {
-    console.warn("Style injections skipped outside explicit DOM contexts.", e);
-  }
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!query.trim() || loading) return;
+
+    const userMessage = { speaker: 'user', text: query };
+    setChat(prev => [...prev, userMessage]);
+    setQuery('');
+    setLoading(true);
+
+    // Capture the existing database arrays safely to pass as system context
+    const currentKitchenContextData = {
+      role: settings?.role || "Staff",
+      recipes: recipes || [],
+      components: components || [],
+      sales: sales || [],
+      waste: waste || [],
+      planner: planner || []
+    };
+
+    try {
+      // Connects directly to your successfully deployed edge function
+      const { data, error } = await supabase.functions.invoke('sous-chat', {
+        body: { 
+          prompt: query, 
+          context: currentKitchenContextData 
+        }
+      });
+
+      if (error) throw error;
+
+      const systemResponse = { 
+        speaker: 'sous', 
+        text: data?.reply || "Heard. I processed the request but encountered a blank return matrix. Please try again." 
+      };
+      setChat(prev => [...prev, systemResponse]);
+
+    } catch (err) {
+      console.error("Sous AI Communication Error:", err);
+      setChat(prev => [...prev, { 
+        speaker: 'sous', 
+        text: `Error connecting to AI engine: ${err.message || 'Check your edge function configuration parameters.'}` 
+      }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={S.container}>
+      <div style={{ marginBottom: 24, borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16 }}>
+        <h1 style={{ fontFamily: "'Bitter', serif", fontSize: 32, fontWeight: 900, color: C.ink, margin: 0 }}>Sous AI Context Engine</h1>
+        <p style={{ fontSize: 13, color: C.inkFade, margin: '4px 0 0 0' }}>Live OpenAI analysis bounded by your kitchen metrics data ledger</p>
+      </div>
+
+      <div style={{ ...S.card, height: 500, display: "flex", flexDirection: "column", background: "#0e0e0c", color: "#f7f1e3", border: `1px solid ${C.inkRule}`, padding: 0, overflow: 'hidden' }}>
+        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14, padding: 20 }}>
+          {chat.map((msg, i) => (
+            <div 
+              key={i} 
+              style={{
+                alignSelf: msg.speaker === 'user' ? 'flex-end' : 'flex-start', 
+                maxWidth: "85%", 
+                background: msg.speaker === 'user' ? C.accent : '#1a1a18', 
+                color: msg.speaker === 'user' ? '#fff' : '#efe6d3',
+                padding: "12px 16px", 
+                border: `1px solid ${C.inkRule}`,
+                borderRadius: '4px'
+              }}
+            >
+              <div style={{ fontSize: 9, fontFamily: "'JetBrains Mono', monospace", color: msg.speaker === 'user' ? '#f5e9c8' : C.inkFade, marginBottom: 4, letterSpacing: '0.5px' }}>
+                {msg.speaker.toUpperCase()}
+              </div>
+              <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                {msg.text}
+              </div>
+            </div>
+          ))}
+          {loading && (
+            <div style={{ alignSelf: 'flex-start', background: '#1a1a18', padding: "12px 16px", borderRadius: '4px', border: `1px solid ${C.inkRule}`, color: C.inkFade, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}>
+              SOUS IS ANALYZING SYSTEM LEDGERS...
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={handleSend} style={{ display: "flex", gap: 8, borderTop: `1px solid ${C.inkRule}`, padding: 12, background: '#121210' }}>
+          <input 
+            type="text" 
+            value={query} 
+            onChange={e => setQuery(e.target.value)} 
+            placeholder={loading ? "Analyzing data context structures..." : "Ask OpenAI about recipe profits, trash leaks, or covers schedule metrics..."} 
+            disabled={loading}
+            style={{ ...S.input, background: "#000", color: "#fff", border: "1px solid #2a2a26", flex: 1, opacity: loading ? 0.6 : 1 }} 
+          />
+          <button type="submit" disabled={loading} style={{ ...S.btnAccent, padding: '0 24px', height: 40, opacity: loading ? 0.6 : 1 }}>
+            {loading ? "Thinking..." : "Ask Sous"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
 }
