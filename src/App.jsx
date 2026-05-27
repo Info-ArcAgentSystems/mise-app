@@ -198,7 +198,7 @@ const settings = customSettings && Object.keys(customSettings).length > 0
         {tab === 'waste' && <WasteScreen waste={waste} onUpdate={(val) => update({ waste: val })} settings={settings} />}
         {tab === 'performance' && <PerformanceScreen recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} />}
         {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={components} sales={sales} waste={waste} planner={planner} />}
-        {tab === 'invoices' && <InvoicesScreen invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} />}
+        {tab === 'invoices' && <InvoicesScreen supabase={supabase} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
         {tab === 'suppliers' && <SuppliersScreen />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
         {tab === 'scan' && <ScanScreen recipes={recipes} onUpdate={(val) => update({ recipes: val })} />}
@@ -1794,200 +1794,212 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings }) {
   );
 }
 
-function WasteScreen({ waste = [], onUpdate, settings }) {
+// ============================================================
+// MOBILE-OPTIMIZED WASTE SCREEN COMPONENT
+// ============================================================
+function WasteScreen({ waste = [], onUpdate, settings = {} }) {
   const currencySymbol = settings?.currency || '£';
-  const [item, setItem] = useState('');
-  const [qty, setQty] = useState('');
-  const [unit, setUnit] = useState('kg');
-  const [cost, setCost] = useState('');
-  const [reason, setReason] = useState('Spoilage');
-  const [syncing, setSyncing] = useState(false);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!item || !qty || !cost || syncing) return;
-
-    setSyncing(true);
-    try {
-      // 1. Discover active tenant workspace context parameters
-      const { data: memberData } = await supabase
-        .from('kitchen_members')
-        .select('kitchen_id')
-        .limit(1)
-        .single();
-
-      if (!memberData) {
-        alert("Authentication context missing. Cannot log waste.");
-        return;
-      }
-
-      const payload = {
-        kitchen_id: memberData.kitchen_id,
-        ingredient: item,
-        qty: parseFloat(qty),
-        unit,
-        cost: parseFloat(cost),
-        reason
-      };
-
-      // 2. Insert into live Supabase ledger matching infrastructure expectations
-      const { data: insertedData, error } = await supabase
-        .from('food_waste_log')
-        .insert([payload])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      // 3. Keep local downstream views updated right away
-      if (onUpdate && insertedData) {
-        onUpdate([...waste, insertedData]);
-      }
-
-      // Reset form controls safely
-      setItem('');
-      setQty('');
-      setCost('');
-    } catch (err) {
-      console.error("Failed to persist waste event log:", err);
-      alert("Error saving waste log: " + err.message);
-    } finally {
-      setSyncing(false);
-    }
-  };
 
   return (
-    <div style={S.container}>
-      <ScreenHeader 
-        title="Physical Waste & Leakage Tracker" 
-        sub="Record kitchen spoilage, prep errors, and expired inventory logs to optimize efficiency metrics" 
-      />
+    <div style={{ maxWidth: 1200, margin: "0 auto", padding: "4px 0" }}>
       
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 24, alignItems: 'start' }}>
-        {/* Log Input Interface Card */}
-        <div style={S.card}>
-          <SectionLabel label="Record New Leakage Event" />
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 14 }}>
+      {/* Header Summary section */}
+      <div style={{ 
+        display: "flex", 
+        flexDirection: "column", 
+        gap: 16, 
+        borderBottom: `1px solid #1a1a18`, 
+        paddingBottom: 16, 
+        marginBottom: 20 
+      }}>
+        <div>
+          <h2 style={{ fontSize: 26, margin: 0, fontFamily: "'Bitter', serif", color: "#0e0e0c" }}>
+            Waste Tracker
+          </h2>
+          <p style={{ margin: "4px 0 0 0", color: "#5a4f40", fontSize: 13, opacity: 0.85 }}>
+            Log inventory leaks, over-production, and dropped yields to protect margins.
+          </p>
+        </div>
+        
+        {/* Top Summary Cards Grid: Automatically stacks vertically on mobile, multi-column on desktop */}
+        <div style={{ 
+          display: "grid", 
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", 
+          gap: 12, 
+          width: "100%" 
+        }}>
+          <div style={{ background: '#efe6d3', padding: 12, border: `1px solid #1a1a18`, borderRadius: 4 }}>
+            <div style={{ fontSize: 11, color: '#5a4f40', textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.5px" }}>
+              Logged Loss (This Period)
+            </div>
+            <div style={{ fontSize: 22, fontWeight: "700", fontFamily: "'JetBrains Mono', monospace", color: '#b8362a', marginTop: 4 }}>
+              {currencySymbol}{waste.reduce((acc, l) => acc + (parseFloat(l.qty || 0) * parseFloat(l.costPrice || l.cost || 0)), 0).toFixed(2)}
+            </div>
+          </div>
+          <div style={{ background: '#efe6d3', padding: 12, border: `1px solid #1a1a18`, borderRadius: 4 }}>
+            <div style={{ fontSize: 11, color: '#5a4f40', textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.5px" }}>
+              Incident Counter
+            </div>
+            <div style={{ fontSize: 22, fontWeight: "700", fontFamily: "'JetBrains Mono', monospace", color: "#0e0e0c", marginTop: 4 }}>
+              {waste.length} entries
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content Split: Uses a flexbox layout that turns into a unified vertical column when inside a tight mobile viewport */}
+      <div style={{ 
+        display: "flex", 
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 24 
+      }}>
+        
+        {/* COLUMN A: Log Loss Input Form */}
+        <div style={{ 
+          flex: "1 1 320px", 
+          background: '#efe6d3', 
+          padding: 16, 
+          border: `1px solid #1a1a18`, 
+          borderRadius: 4,
+          height: "fit-content",
+          boxSizing: "border-box"
+        }}>
+          <h3 style={{ margin: "0 0 16px 0", fontSize: 14, fontFamily: "'Bitter', serif", textTransform: "uppercase", letterSpacing: "0.5px", borderBottom: `1px solid #1a1a18`, paddingBottom: 8, color: "#0e0e0c" }}>
+            Record New Variance
+          </h3>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const newLog = {
+              id: Date.now(),
+              item: fd.get('item_name'),
+              qty: parseFloat(fd.get('qty') || 0),
+              unit: fd.get('unit'),
+              cost: parseFloat(fd.get('cost_per_unit') || 0),
+              reason: fd.get('reason'),
+              date: new Date().toISOString().split('T')[0]
+            };
+            onUpdate([newLog, ...waste]);
+            e.target.reset();
+          }} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4 }}>Ingredient Name</label>
-              <input 
-                type="text" 
-                value={item} 
-                onChange={e => setItem(e.target.value)} 
-                placeholder="e.g. Fresh Salmon Fillet" 
-                style={S.input} 
-                required 
-              />
+              <label style={{ display: "block", fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3a3530' }}>Component Name</label>
+              <input name="item_name" required placeholder="e.g., Salmon Fillet, Double Cream" style={{ width: "100%", padding: "8px 10px", border: "1px solid #1a1a18", background: "#fff", borderRadius: 4, boxSizing: "border-box" }} />
             </div>
 
-            <div style={{ display: 'flex', gap: 10 }}>
-              <div style={{ flex: 2 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4 }}>Quantity Waste</label>
-                <input 
-                  type="number" 
-                  step="any"
-                  value={qty} 
-                  onChange={e => setQty(e.target.value)} 
-                  placeholder="0.0" 
-                  style={S.input} 
-                  required 
-                />
+            {/* Quantitative Details Row split */}
+            <div style={{ 
+              display: "grid", 
+              gridTemplateColumns: "1fr 1fr", 
+              gap: 8 
+            }}>
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3a3530' }}>Quantity</label>
+                <input name="qty" type="number" step="any" required placeholder="1.5" style={{ width: "100%", padding: "8px 10px", border: "1px solid #1a1a18", background: "#fff", borderRadius: 4, boxSizing: "border-box" }} />
               </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4 }}>Unit</label>
-                <select value={unit} onChange={e => setUnit(e.target.value)} style={S.input}>
-                  <option value="kg">kg</option>
-                  <option value="g">g</option>
-                  <option value="L">L</option>
-                  <option value="ml">ml</option>
-                  <option value="ea">ea</option>
-                </select>
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3a3530' }}>Unit</label>
+                <input name="unit" required placeholder="kg, L, ea" style={{ width: "100%", padding: "8px 10px", border: "1px solid #1a1a18", background: "#fff", borderRadius: 4, boxSizing: "border-box" }} />
               </div>
             </div>
 
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4 }}>Total Financial Cost Loss (£)</label>
-              <input 
-                type="number" 
-                step="any"
-                value={cost} 
-                onChange={e => setCost(e.target.value)} 
-                placeholder="0.00" 
-                style={S.input} 
-                required 
-              />
+              <label style={{ display: "block", fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3a3530' }}>Cost per Unit ({currencySymbol})</label>
+              <input name="cost_per_unit" type="number" step="any" required placeholder="12.50" style={{ width: "100%", padding: "8px 10px", border: "1px solid #1a1a18", background: "#fff", borderRadius: 4, boxSizing: "border-box" }} />
             </div>
 
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4 }}>Primary Deviation Reason</label>
-              <select value={reason} onChange={e => setReason(e.target.value)} style={S.input}>
-                <option value="Spoilage">Spoilage / Expired</option>
-                <option value="Prep Error">Kitchen Prep Mistake</option>
-                <option value="Over-Production">Unsold Surplus Buffers</option>
-                <option value="Spill/Drop">Accidental Drop/Spill</option>
+              <label style={{ display: "block", fontSize: 11, fontWeight: 700, marginBottom: 4, color: '#3a3530' }}>Reason Code</label>
+              <select name="reason" style={{ width: "100%", padding: "8px 10px", border: "1px solid #1a1a18", background: "#fff", borderRadius: 4, boxSizing: "border-box" }}>
+                <option value="Spoilage">Spoilage / Expiry</option>
+                <option value="Over-production">Over-production Trimming</option>
+                <option value="Dropped/Spilled">Dropped / Damaged Prep</option>
+                <option value="Sub-standard">Sub-standard Delivery Rejection</option>
               </select>
             </div>
 
-            <button 
-              type="submit" 
-              disabled={syncing}
-              style={{ ...S.btnAccent, marginTop: 6, opacity: syncing ? 0.6 : 1 }}
-            >
-              {syncing ? "LOGGING TRANSACTION LXI..." : "Commit Waste Entry"}
+            <button type="submit" style={{ width: "100%", padding: "10px", background: '#1a1a18', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 8 }}>
+              Commit To Leak Ledger
             </button>
           </form>
         </div>
 
-        {/* Historic Real-Time Inventory Loss Logs Card */}
-        <div style={S.card}>
-          <SectionLabel label="Historical Workspace Loss Ledger Records" />
-          <div style={{ overflowX: 'auto', marginTop: 14 }}>
-            {waste.length === 0 ? (
-              <p style={{ fontSize: 13, color: C.inkFade, fontStyle: 'italic', padding: '12px 0' }}>
-                No recorded leakages logged inside this ledger window block.
-              </p>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                <thead>
-                  <tr style={{ borderBottom: `2px solid ${C.inkRule}` }}>
-                    <th style={{ padding: '8px', fontSize: 11, color: C.inkFade }}>Ingredient</th>
-                    <th style={{ padding: '8px', fontSize: 11, color: C.inkFade, textAlign: 'right' }}>Volume</th>
-                    <th style={{ padding: '8px', fontSize: 11, color: C.inkFade, textAlign: 'right' }}>Cost Price</th>
-                    <th style={{ padding: '8px', fontSize: 11, color: C.inkFade, textAlign: 'right' }}>Root Cause</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {waste.map((w, idx) => (
-                    <tr key={w.id || idx} style={{ borderBottom: `1px solid ${C.paper2}` }}>
-                      <td style={{ padding: '10px 8px', fontWeight: 700, textTransform: 'capitalize', fontSize: 14 }}>
-                        {w.ingredient}
-                      </td>
-                      <td style={{ padding: '10px 8px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}>
-                        {parseFloat(w.qty).toFixed(2)} <span style={{ fontSize: 10, color: C.inkFade }}>{w.unit}</span>
-                      </td>
-                      <td style={{ padding: '10px 8px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.red, fontSize: 13 }}>
-                        £{parseFloat(w.cost || 0).toFixed(2)}
-                      </td>
-                      <td style={{ padding: '10px 8px', textAlign: 'right' }}>
-                        <span style={{ 
-                          fontSize: 10, 
-                          fontWeight: 700, 
-                          background: '#ffd1d1', 
-                          color: C.red, 
-                          padding: '3px 6px', 
-                          borderRadius: 4,
-                          textTransform: 'uppercase'
-                        }}>
-                          {w.reason}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+        {/* COLUMN B: Historic Ledger Activity Feed */}
+        <div style={{ flex: "1.5 1 360px", boxSizing: "border-box" }}>
+          <h3 style={{ margin: "0 0 12px 0", fontSize: 14, fontFamily: "'Bitter', serif", textTransform: "uppercase", letterSpacing: "0.5px", display: "flex", justifyContent: "space-between", alignItems: "center", color: "#0e0e0c" }}>
+            <span>Historical Variance Logs</span>
+            <span style={{ fontSize: 11, background: '#f5e9c8', padding: "2px 8px", borderRadius: 10, color: '#3a3530', border: '1px solid #1a1a18', fontFamily: "'JetBrains Mono', monospace" }}>
+              {waste.length} Total
+            </span>
+          </h3>
+
+          {waste.length === 0 ? (
+            <div style={{ padding: 32, textAlign: "center", border: `1px dashed #5a4f40`, color: '#5a4f40', borderRadius: 4, background: '#f7f1e3' }}>
+              No variance logs recorded in the active fiscal period.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {waste.map((log, idx) => {
+                const logCost = parseFloat(log.cost || log.costPrice || 0);
+                const logQty = parseFloat(log.qty || 0);
+                return (
+                  <div key={log.id || idx} style={{ 
+                    background: '#efe6d3', 
+                    border: `1px solid #1a1a18`, 
+                    borderRadius: 4, 
+                    padding: 12,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    boxSizing: "border-box"
+                  }}>
+                    {/* Item Title & Monetary Impact Statement */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: '#0e0e0c' }}>{log.item || log.itemName || 'Unassigned Component'}</div>
+                      <div style={{ fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", fontSize: 14, color: '#b8362a', whiteSpace: "nowrap" }}>
+                        -{currencySymbol}{(logQty * logCost).toFixed(2)}
+                      </div>
+                    </div>
+
+                    {/* Flex Wrap-Around Layout Badges */}
+                    <div style={{ 
+                      display: "flex", 
+                      flexWrap: "wrap", 
+                      gap: 6, 
+                      fontSize: 11, 
+                      color: '#5a4f40' 
+                    }}>
+                      <span style={{ background: '#f7f1e3', padding: "2px 6px", borderRadius: 2, border: `1px solid rgba(0,0,0,0.1)` }}>
+                        Amount: <strong>{logQty} {log.unit || 'units'}</strong>
+                      </span>
+                      <span style={{ background: '#f7f1e3', padding: "2px 6px", borderRadius: 2, border: `1px solid rgba(0,0,0,0.1)` }}>
+                        Cost/U: <strong>{currencySymbol}{logCost.toFixed(2)}</strong>
+                      </span>
+                      <span style={{ 
+                        background: log.reason === 'Spoilage' ? '#b8362a' : '#1a1a18', 
+                        color: '#fff', 
+                        padding: "2px 6px", 
+                        borderRadius: 2,
+                        fontSize: 10,
+                        fontWeight: 600
+                      }}>
+                        {log.reason || 'Variance'}
+                      </span>
+                    </div>
+                    
+                    {/* Datetime stamp notation */}
+                    <div style={{ fontSize: 10, color: '#5a4f40', textAlign: "right", opacity: 0.8 }}>
+                      {log.date || 'Active Entry'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
+
       </div>
     </div>
   );
@@ -2054,226 +2066,351 @@ function PerformanceScreen({ recipes = [], components = [], planner = [], sales 
   );
 }
 
-function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes, settings }) {
+export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = [], onUpdateRecipes, settings }) {
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsing, setParsing] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
+  
+  const [showLaptopCamera, setShowLaptopCamera] = useState(false);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  const cameraInputRef = useRef(null);
+  const photoInputRef = useRef(null);
   const fileInputRef = useRef(null);
 
   const safeInvoices = invoices || [];
-  const safeRecipes = recipes || [];
   const currentCurrency = settings?.currency || '£';
+
+  const C = {
+    paper: '#f7f1e3',
+    paper2: '#efe6d3',
+    ink: '#0e0e0c',
+    inkFade: '#5a4f40',
+    highlight: '#f5e9c8',
+    accent: '#b8730a',
+    green: '#4a6b3a'
+  };
+
+  const S = {
+    container: { display: 'flex', flexDirection: 'column' },
+    card: { background: '#ffffff', border: `1px solid ${C.paper2}`, padding: '16px', borderRadius: '4px' }
+  };
+
+  // ============================================================
+  // DATABASE RETRIEVAL & AI PROCESSING PIPELINE
+  // ============================================================
+  // ============================================================
+  // DATABASE RETRIEVAL & AI PROCESSING PIPELINE
+  // ============================================================
+  // ============================================================
+  // DATABASE RETRIEVAL & AI PROCESSING PIPELINE
+  // ============================================================
+  const handleStartParsingPipeline = async () => {
+    if (!file || parsing) return;
+    setParsing(true);
+    try {
+      if (!supabase) {
+        throw new Error("Supabase client instance was not provided down via component context props.");
+      }
+
+      // 1. RESOLVE USER ID AS KITCHEN ID
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+
+      const activeKitchenId = session?.user?.id;
+      if (!activeKitchenId) {
+        throw new Error("No active user session found. Please log in again.");
+      }
+
+      // 2. Convert image file to raw base64 data stream string
+      const base64Payload = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => {
+          const base64String = reader.result.split(',')[1];
+          resolve(base64String);
+        };
+        reader.onerror = (error) => reject(error);
+      });
+
+      const fileExt = file.name ? file.name.split('.').pop() : 'jpg';
+
+      // 3. Request data parsing via your local Edge Function runtime container
+      const { data: result, error: functionError } = await supabase.functions
+        .invoke('parse-invoice', {
+          body: { 
+            image: base64Payload, 
+            fileType: fileExt, 
+            currentRecipes: recipes 
+          }
+        });
+
+      if (functionError) throw functionError;
+      
+      // 4. Extract standard flat schema maps out of response container
+      const rawInvoice = result?.invoice || result?.data || result;
+      if (!rawInvoice) {
+        throw new Error("AI parsing container engine returned an empty response object.");
+      }
+
+      const extractedSupplier = rawInvoice.supplier || rawInvoice.vendor || 'Unknown Supplier';
+      const extractedTotal = parseFloat(rawInvoice.total || rawInvoice.invoice_total || 0);
+      const extractedItems = rawInvoice.items || rawInvoice.line_items || [];
+      const extractedDate = rawInvoice.inv_date || rawInvoice.date || new Date().toISOString().split('T')[0];
+      const extractedRef = 
+        rawInvoice.ref || 
+        rawInvoice.invoice_ref || 
+        rawInvoice.invoice_number || 
+        rawInvoice.id || 
+        `INV-${Date.now().toString().slice(-6)}`;
+
+      // 5. Insert directly into your invoices table
+      const { data: insertedInvoice, error: insertError } = await supabase
+        .from('invoices')
+        .insert([{
+          kitchen_id: activeKitchenId,
+          supplier: extractedSupplier,
+          total: extractedTotal,
+          ref: extractedRef, 
+          inv_date: extractedDate,
+          created_at: new Date().toISOString()
+        }])
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
+
+      // 6. Bulk write line items straight to invoice_lines matching your exact columns!
+      if (Array.isArray(extractedItems) && extractedItems.length > 0) {
+        const formattedLines = extractedItems.map((item, index) => ({
+          kitchen_id: activeKitchenId,
+          invoice_id: insertedInvoice.id,
+          position: index + 1,
+          name: item.description || item.name || 'Item',
+          qty: parseFloat(item.qty || item.quantity || 1),
+          unit: item.unit || 'ea',
+          price_per_unit: parseFloat(item.unit_price || item.price || item.rate || 0),
+          line_total: parseFloat(item.total || item.amount || 0)
+        }));
+
+        const { error: linesError } = await supabase
+          .from('invoice_lines')
+          .insert(formattedLines);
+
+        if (linesError) console.error("Line items writing exception:", linesError);
+
+        // ============================================================
+        // 🌟 NEW: LIVE DATABASE INGREDIENT COST UPDATES
+        // ============================================================
+        // Loop through each item from the invoice and save its unit price to your inventory table
+        for (const item of extractedItems) {
+          const itemName = item.description || item.name;
+          const unitPrice = parseFloat(item.unit_price || item.price || item.rate || 0);
+
+          if (itemName && unitPrice > 0) {
+            // Option A: If you track costs in an 'ingredients' or 'raw_inventory' table
+            await supabase
+              .from('ingredients') // <-- Adjust to 'raw_inventory' if that's your table name
+              .update({ price_per_unit: unitPrice }) // <-- Adjust column name if needed (e.g., 'cost')
+              .eq('kitchen_id', activeKitchenId)
+              .ilike('name', `%${itemName}%`); // Case-insensitive match (e.g., 'Salmon Fillet')
+          }
+        }
+      }
+
+      // 7. Update browser view memory matrices instantly
+      const updatedInvoiceWithItems = { ...insertedInvoice, items: extractedItems };
+      const updatedInvoicesList = [...safeInvoices, updatedInvoiceWithItems];
+      
+      if (onUpdate) onUpdate(updatedInvoicesList);
+
+      // Force state update for the recipes view
+      const recipesToUpdate = result?.updatedRecipes || result?.recipes;
+      if (recipesToUpdate && onUpdateRecipes) {
+        onUpdateRecipes(recipesToUpdate);
+      }
+      
+      clearStagedFile();
+      alert("🎉 Success! Invoice saved and database ingredient prices recalculated.");
+
+    } catch (error) {
+      console.error("Critical extraction fault:", error);
+      alert("Failed to analyze text document: " + error.message);
+    } finally {
+      setParsing(false);
+    }
+  };
 
   const handleFileChange = (e) => {
     const selected = e.target.files[0];
     if (!selected) return;
     setFile(selected);
     setPreviewUrl(URL.createObjectURL(selected));
+    setShowOptions(false);
   };
 
-  const handleParseAndCommit = async () => {
-    if (!previewUrl) return;
-    setParsing(true);
-    try {
-      const { data: memberData, error: memberError } = await supabase
-        .from('kitchen_members')
-        .select('kitchen_id')
-        .limit(1)
-        .single();
-
-      if (memberError || !memberData) {
-        throw new Error("Could not find an assigned kitchen workspace for this account.");
+  const handleTakePhoneOrLaptopPhoto = async () => {
+    setShowOptions(false);
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      cameraInputRef.current?.click();
+    } else {
+      setShowLaptopCamera(true);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        streamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      } catch (err) {
+        alert("Webcam error: " + err.message);
+        setShowLaptopCamera(false);
       }
-      
-      const activeKitchenId = memberData.kitchen_id;
-      const targetBlob = await fetch(previewUrl).then(res => res.blob());
-      const base64String = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result.split(',')[1]);
-        reader.readAsDataURL(targetBlob);
-      });
-
-      const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
-        method: "POST",
-        body: {
-          imageBase64: base64String,
-          fileType: file?.type || "image/jpeg",
-          fileName: file?.name || "upload.jpg"
-        }
-      });
-
-      if (edgeFunctionError || !aiExtractedData) {
-        throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
-      }
-
-      const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
-      const detectedTotal = parseFloat(aiExtractedData.total) || 0;
-      const parsedAiLines = aiExtractedData.lines || [];
-
-      const { data: invData, error: invError } = await supabase
-        .from('invoices')
-        .insert([{
-          kitchen_id: activeKitchenId,
-          supplier: detectedSupplier,
-          ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
-          inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
-          total: detectedTotal,
-          lines: parsedAiLines.length,
-          status: "filed"
-        }]).select();
-
-      if (invError) throw invError;
-      const savedInvoice = invData?.[0];
-
-      if (savedInvoice && parsedAiLines.length > 0) {
-        const linesToInsert = parsedAiLines.map((line, idx) => ({
-          kitchen_id: activeKitchenId,
-          invoice_id: savedInvoice.id,
-          position: idx,
-          name: line.name,
-          qty: parseFloat(line.qty) || 1,
-          unit: line.unit || "",
-          price_per_unit: parseFloat(line.price_per_unit) || 0,
-          line_total: parseFloat(line.line_total) || 0,
-          matched: line.name
-        }));
-
-        const { error: linesError } = await supabase
-          .from('invoice_lines')
-          .insert(linesToInsert);
-
-        if (linesError) throw linesError;
-
-        let workingRecipesCopy = JSON.parse(JSON.stringify(recipes || []));
-
-        for (const line of parsedAiLines) {
-          const cleanLineName = line.name ? line.name.trim().toLowerCase() : '';
-          if (!cleanLineName) continue;
-          const newCost = parseFloat(line.price_per_unit || 0);
-
-          await supabase
-            .from('recipe_ingredients')
-            .update({ cost: newCost })
-            .eq('kitchen_id', activeKitchenId)
-            .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
-            
-          await supabase
-            .from('component_ingredients')
-            .update({ cost: newCost })
-            .eq('kitchen_id', activeKitchenId)
-            .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
-
-          workingRecipesCopy = workingRecipesCopy.map(recipe => {
-            if (!recipe.ingredients) return recipe;
-            const updatedIngredients = recipe.ingredients.map(ing => {
-              const targetIngredientName = (ing.name || '').toLowerCase();
-              if (
-                targetIngredientName.includes(cleanLineName) || 
-                cleanLineName.includes(targetIngredientName) ||
-                targetIngredientName.replace(/s$/, '') === cleanLineName.replace(/s$/, '')
-              ) {
-                return { ...ing, cost: newCost };
-              }
-              return ing;
-            });
-            return { ...recipe, ingredients: updatedIngredients };
-          });
-        }
-
-        if (onUpdateRecipes) {
-          onUpdateRecipes(workingRecipesCopy);
-        }
-      }
-
-      if (onUpdate && savedInvoice) {
-        onUpdate([...safeInvoices, savedInvoice]);
-      }
-
-      alert("Success! Matched recipe costs updated for your active workspace.");
-      setPreviewUrl(null);
-      setFile(null);
-
-    } catch (err) {
-      console.error(err);
-      alert("Failed running image pipeline: " + err.message);
-    } finally {
-      setParsing(false);
     }
+  };
+
+  const captureLaptopSnapshot = () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = videoRef.current.videoWidth || 640;
+    canvas.height = videoRef.current.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const capturedFile = new File([blob], `captured_invoice_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setFile(capturedFile);
+      setPreviewUrl(URL.createObjectURL(capturedFile));
+      closeLaptopCamera();
+    }, 'image/jpeg');
+  };
+
+  const closeLaptopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    streamRef.current = null;
+    setShowLaptopCamera(false);
+  };
+
+  const clearStagedFile = () => {
+    setFile(null);
+    setPreviewUrl(null);
   };
 
   return (
     <div style={S.container}>
-      <ScreenHeader title="AI Invoice Processing" sub="Digitize physical supplier delivery notes directly into structured recipe costings" />
-      
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        {/* Modernized Container layout matching the dark panel schema */}
-        <div style={{ background: '#1a1a18', border: '1px solid #2a2a26', padding: '24px', borderRadius: '4px' }}>
-          <SectionLabel label="Capture Feed Input" />
-          
-          {/* Native hardware-bound dynamic system capture input */}
-          <input 
-            type="file" 
-            accept="image/*"
-            capture="environment"
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            style={{ display: 'none' }} 
-            disabled={parsing} 
-          />
+      {/* HEADER SECTION */}
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 24, margin: '0 0 4px 0', color: C.ink }}>
+          AI Invoice Processing
+        </h2>
+        <p style={{ margin: 0, fontSize: 13, color: C.inkFade }}>
+          Digitize delivery notes directly into recipe tracking templates
+        </p>
+      </div>
 
-          {/* Dash Border Dropper Click Area Box */}
-          <div 
-            onClick={() => !parsing && fileInputRef.current?.click()}
-            style={{
-              border: '1px dashed #3a3530',
-              padding: '44px 20px',
-              textAlign: 'center',
-              borderRadius: '4px',
-              cursor: parsing ? 'not-allowed' : 'pointer',
-              background: '#121210',
-              marginTop: '16px',
-              marginBottom: '16px',
-              transition: 'border-color 0.15s'
-            }}
-          >
-            <span style={{ fontSize: '32px', display: 'block', marginBottom: '10px' }}>📁</span>
-            <span style={{ fontSize: '13px', color: '#fff', fontWeight: '600', letterSpacing: '0.3px' }}>
-              {file ? file.name : "Select Invoice File"}
-            </span>
-            <p style={{ fontSize: '11px', color: C.inkFade, margin: '6px 0 0 0' }}>
-              Launches phone camera or desktop file chooser directly
-            </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+        <input type="file" accept="image/*" ref={photoInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+        <input type="file" accept=".pdf,.doc,.docx,.txt,image/*" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+
+        {/* FEED CARD BLOCK */}
+        <div style={{ ...S.card, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px' }}>
+          <div style={{ fontSize: '11px', fontWeight: '700', color: C.inkFade, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.5px' }}>
+            CAPTURE FEED INPUT
           </div>
 
-          {previewUrl && (
-            <div style={{ display: 'flex', justifyContent: 'center', background: '#000', padding: '12px', border: '1px solid #2a2a26', borderRadius: '4px', marginBottom: '16px' }}>
-              <img src={previewUrl} alt="Target Staged View" style={{ maxHeight: '150px', maxWidth: '100%', objectFit: 'contain' }} />
+          {!file && !showLaptopCamera && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px 0' }}>
+              <button
+                onClick={() => !parsing && setShowOptions(true)}
+                disabled={parsing}
+                style={{
+                  background: '#ffffff',
+                  color: C.ink,
+                  border: `1px solid ${C.paper2}`,
+                  borderRadius: '4px',
+                  padding: '12px 24px', 
+                  fontSize: '13px', 
+                  fontWeight: '700',
+                  fontFamily: "'JetBrains Mono', monospace",
+                  cursor: parsing ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                + Scan Invoice
+              </button>
             </div>
           )}
 
-          <button 
-            onClick={handleParseAndCommit} 
-            disabled={parsing || !previewUrl}
-            style={{ 
-              width: '100%', 
-              padding: '14px', 
-              fontSize: '13px',
-              fontFamily: "'JetBrains Mono', monospace",
-              fontWeight: 700, 
-              background: (!previewUrl || parsing) ? '#2a2a26' : C.green,
-              color: (!previewUrl || parsing) ? C.inkFade : '#fff',
-              borderRadius: '4px',
-              border: 'none',
-              cursor: (!previewUrl || parsing) ? 'not-allowed' : 'pointer',
-              letterSpacing: '0.5px'
-            }}
-          >
-            {parsing ? "ANALYZING IMAGES VIA CLOUD AI COMPILER..." : "⚡ PARSE TEXT & UPDATE COST MATRICES"}
-          </button>
+          {showLaptopCamera && (
+            <div style={{ padding: '4px 0', textAlign: 'center' }}>
+              <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxWidth: '400px', borderRadius: '4px', background: '#000' }} />
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '12px' }}>
+                <button onClick={captureLaptopSnapshot} style={{ background: C.ink, color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '4px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}>📸 Capture Photo</button>
+                <button onClick={closeLaptopCamera} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, padding: '8px 16px', borderRadius: '4px', fontSize: '12px', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
 
+        {/* OPTIONS MODAL POPUP */}
+        {showOptions && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(14, 14, 12, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+            <div style={{ background: '#ffffff', border: `1px solid ${C.paper2}`, borderRadius: '6px', width: '100%', maxWidth: '300px', padding: '16px', boxShadow: '0 12px 36px rgba(0,0,0,0.15)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', paddingBottom: '6px', borderBottom: `1px solid ${C.paper2}` }}>
+                <span style={{ fontSize: '11px', fontWeight: '700', color: C.inkFade, fontFamily: "'JetBrains Mono', monospace" }}>SELECT DOCUMENT SOURCE</span>
+                <button onClick={() => setShowOptions(false)} style={{ background: 'none', border: 'none', color: C.inkFade, fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}>×</button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button onClick={() => { fileInputRef.current?.click(); setShowOptions(false); }} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer' }}>📁 Select File</button>
+                <button onClick={() => { photoInputRef.current?.click(); setShowOptions(false); }} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer' }}>🖼️ Select Photo</button>
+                <button onClick={handleTakePhoneOrLaptopPhoto} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer', fontWeight: '600' }}>📷 Take a photo</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ACTIONS PANEL STAGE FRAME */}
+        {previewUrl && !showLaptopCamera && (
+          <div style={{ background: C.paper, border: `1px solid ${C.paper2}`, padding: '24px', borderRadius: '4px' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', background: C.paper2, padding: '12px', border: `1px solid ${C.paper2}`, borderRadius: '4px', position: 'relative', marginBottom: 16 }}>
+              <img src={previewUrl} alt="Staged View" style={{ maxHeight: '220px', maxWidth: '100%', objectFit: 'contain' }} />
+              <button onClick={clearStagedFile} style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(255,255,255,0.9)', border: `1px solid ${C.paper2}`, color: C.ink, borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>×</button>
+            </div>
+            
+            <button 
+              onClick={handleStartParsingPipeline}
+              disabled={parsing} 
+              style={{ 
+                width: '100%', 
+                padding: '16px', 
+                fontSize: '13px', 
+                fontFamily: "'JetBrains Mono', monospace", 
+                fontWeight: 700, 
+                background: C.green, 
+                color: '#fff', 
+                borderRadius: '4px', 
+                border: 'none',
+                cursor: parsing ? 'not-allowed' : 'pointer',
+                opacity: parsing ? 0.7 : 1
+              }}
+            >
+              {parsing ? "SOUS IS ANALYZING SYSTEM LEDGERS..." : "⚡ PARSE TEXT & UPDATE COST MATRICES"}
+            </button>
+          </div>
+        )}
+
+        {/* HISTORICAL LEDGER FRAME CARD */}
         <div style={S.card}>
-          <SectionLabel label="Historical Tenant Document Logs (public.invoices)" />
+          <div style={{ fontSize: '11px', fontWeight: '700', color: C.inkFade, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.5px', marginBottom: '8px' }}>
+            HISTORICAL TENANT DOCUMENT LOGS
+          </div>
           <div style={{ overflowY: 'auto', maxHeight: 300, marginTop: 12 }}>
             {safeInvoices.length === 0 ? (
               <p style={{ fontSize: 12, color: C.inkFade, fontStyle: 'italic' }}>No processed items mapped inside local ledger frame cache.</p>
@@ -2283,10 +2420,6 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 14 }}>
                     <span>{inv.supplier}</span>
                     <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{currentCurrency}{parseFloat(inv.total || 0).toFixed(2)}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.inkFade, marginTop: 4 }}>
-                    <span>Ref: {inv.ref} · {inv.lines || 0} column items</span>
-                    <span>Filed: {inv.inv_date}</span>
                   </div>
                 </div>
               ))
@@ -2370,189 +2503,159 @@ function PosScreen({ sales, recipes, onUpdate }) {
   );
 }
 
-function ScanScreen({ recipes = [], onUpdateRecipes }) {
+function ScanScreen({ recipes = [], onUpdateRecipes, settings }) {
+  const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [scannedData, setScannedData] = useState(null);
-  
+  const [showOptions, setShowOptions] = useState(false);
+
+  const [showLaptopCamera, setShowLaptopCamera] = useState(false);
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  
+  const cameraInputRef = useRef(null);
+  const photoInputRef = useRef(null);
   const fileInputRef = useRef(null);
 
   const safeRecipes = recipes || [];
+  const currentCurrency = settings?.currency || '£';
 
-  useEffect(() => {
-    return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject;
-        stream.getTracks().forEach(track => track.stop());
+  const handleFileChange = (e) => {
+    const Objectfile = e.target.files[0];
+    if (!Objectfile) return;
+    setFile(Objectfile);
+    setPreviewUrl(URL.createObjectURL(Objectfile));
+    setShowOptions(false);
+  };
+
+  const handleTakePhoneOrLaptopPhoto = async () => {
+    setShowOptions(false);
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      cameraInputRef.current?.click();
+    } else {
+      setShowLaptopCamera(true);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        streamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      } catch (err) {
+        alert("Webcam error: " + err.message);
+        setShowLaptopCamera(false);
       }
-    };
-  }, []);
+    }
+  };
 
-  const startLiveCamera = async () => {
-    setScannedData(null);
+  const captureLaptopSnapshot = () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = videoRef.current.videoWidth || 640;
+    canvas.height = videoRef.current.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const capturedFile = new File([blob], `captured_recipe_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setFile(capturedFile);
+      setPreviewUrl(URL.createObjectURL(capturedFile));
+      closeLaptopCamera();
+    }, 'image/jpeg');
+  };
+
+  const closeLaptopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    streamRef.current = null;
+    setShowLaptopCamera(false);
+  };
+
+  const clearStagedFile = () => {
+    setFile(null);
     setPreviewUrl(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      console.error("Camera setup failed:", err);
-      alert("Unable to open hardware camera. Falling back to File Capture alternative mode.");
-    }
-  };
-
-  const capturePhoto = () => {
-    if (videoRef.current && canvasRef.current) {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        setPreviewUrl(canvas.toDataURL("image/jpeg"));
-        const stream = video.srcObject;
-        if (stream) {
-          stream.getTracks().forEach(track => track.stop());
-        }
-      }
-    }
-  };
-
-  const executeRecipeDigitizer = async () => {
-    if (!previewUrl) return;
-    setIsExtracting(true);
-
-    try {
-      const { data: member } = await supabase.from('kitchen_members').select('kitchen_id').limit(1).single();
-      if (!member) throw new Error("No kitchen session found.");
-
-      // Preserved Baseline Validation Testing Dataset
-      const simulatedRecipeOutput = {
-        name: "Sinigang Pork Belly",
-        category: "Main",
-        sell_price: 18.50,
-        ingredients: [
-          { name: "Beef Cheek", cost: 13.50, qty: 5, unit: "kg", supplier: "Wellocks Market" },
-          { name: "Salmon Fillet", cost: 17.50, qty: 2, unit: "kg", supplier: "Wellocks Market" }
-        ]
-      };
-
-      setScannedData(simulatedRecipeOutput);
-    } catch (err) {
-      alert("Error scanning configuration: " + err.message);
-    } finally {
-      setIsExtracting(false);
-    }
-  };
-
-  const acceptScan = async () => {
-    if (!scannedData) return;
-    try {
-      const { data: member } = await supabase.from('kitchen_members').select('kitchen_id').limit(1).single();
-      if (!member) throw new Error("No active kitchen tenant context found.");
-
-      // 1. Write parent row to public.recipes
-      const { data: rData, error: rError } = await supabase
-        .from('recipes')
-        .insert([{
-          kitchen_id: member.kitchen_id,
-          name: scannedData.name,
-          category: scannedData.category,
-          sell_price: scannedData.sell_price,
-          dietary: []
-        }]).select();
-
-      if (rError) throw rError;
-      const createdRecipe = rData?.[0];
-
-      // 2. Map split row objects to public.recipe_ingredients relational children
-      if (createdRecipe) {
-        const ingredientsRows = scannedData.ingredients.map((ing, idx) => ({
-          kitchen_id: member.kitchen_id,
-          recipe_id: createdRecipe.id,
-          position: idx,
-          kind: 'raw',
-          name: ing.name,
-          cost: ing.cost,
-          qty: ing.qty,
-          unit: ing.unit,
-          supplier: ing.supplier
-        }));
-
-        const { error: ingError } = await supabase.from('recipe_ingredients').insert(ingredientsRows);
-        if (ingError) throw ingError;
-
-        if (onUpdateRecipes) {
-          onUpdateRecipes([...safeRecipes, { ...createdRecipe, ingredients: ingredientsRows }]);
-        }
-        alert(`Success: "${scannedData.name}" committed to relational master library ledger tables!`);
-        setPreviewUrl(null);
-        setScannedData(null);
-      }
-    } catch (err) {
-      alert("Error saving recipe rows: " + err.message);
-    }
+    setScannedData(null);
   };
 
   return (
     <div style={S.container}>
-      <ScreenHeader title="AI Recipe Digitizer Pipeline" sub="Upload structural spec sheets or image snapshots to build formulation databases automatically" />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+      {/* HEADER ROW WITH ALIGNED BIGGER BUTTON */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div style={{ flex: 1, marginRight: 24 }}>
+          <ScreenHeader title="AI Recipe Digitizer" sub="Instantly extract formulation lists directly into your template database structures" />
+        </div>
         
-        <div style={S.card}>
-          <SectionLabel label="Optical Formulation Feed Input" />
-          <div style={{ display: "flex", gap: 10, marginTop: 14, marginBottom: 16 }}>
-            <button onClick={() => fileInputRef.current?.click()} style={S.btn}>📂 Choose Snapshot File</button>
-            <button onClick={startLiveCamera} style={S.btnAccent}>📷 Open document camera</button>
-            <input type="file" ref={fileInputRef} accept="image/*" style={{ display: "none" }} onChange={e => {
-              const f = e.target.files?.[0];
-              if (f) setPreviewUrl(URL.createObjectURL(f));
-              setScannedData(null);
-            }} />
+        {!file && !showLaptopCamera && (
+          <button
+            onClick={() => !isExtracting && setShowOptions(true)}
+            disabled={isExtracting}
+            style={{
+              background: '#ffffff',
+              color: C.ink,
+              border: `1px solid ${C.paper2}`,
+              borderRadius: '4px',
+              padding: '12px 28px', // Increased padding to make it bigger
+              fontSize: '14px', // Increased text readability size
+              fontWeight: '700',
+              fontFamily: "'JetBrains Mono', monospace",
+              cursor: isExtracting ? 'not-allowed' : 'pointer',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+              marginTop: '4px',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            + Scan Invoice
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+        <input type="file" accept="image/*" ref={photoInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+        <input type="file" accept=".pdf,.doc,.docx,.txt,image/*" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+
+        {showLaptopCamera && (
+          <div style={{ background: C.paper2, border: `1px dashed ${C.inkFade}`, padding: '16px', borderRadius: '4px', textAlign: 'center' }}>
+            <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxWidth: '400px', borderRadius: '4px', background: '#000' }} />
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '12px' }}>
+              <button onClick={captureLaptopSnapshot} style={{ background: C.ink, color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '4px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}>📸 Capture Photo</button>
+              <button onClick={closeLaptopCamera} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, padding: '8px 16px', borderRadius: '4px', fontSize: '12px', cursor: 'pointer' }}>Cancel</button>
+            </div>
           </div>
+        )}
 
-          {previewUrl && (
-            <div style={{ marginTop: 20, padding: 20, background: C.paper, borderRadius: 4, border: `1px dashed ${C.inkFade}`, textAlign: "center" }}>
-              <img src={previewUrl} alt="Preview" style={{ maxHeight: 240, maxWidth: "100%", marginBottom: 14, border: `1px solid ${C.inkRule}` }} />
-              <button onClick={executeRecipeDigitizer} disabled={isExtracting} style={{ ...S.btnAccent, width: "100%", background: C.blue, color: "white" }}>
-                {isExtracting ? "EXTRACTING FORMULATION ARRAYS..." : "⚡ RUN IMAGE OCR PARSER ENGINE"}
-              </button>
-            </div>
-          )}
-          <canvas ref={canvasRef} style={{ display: "none" }} />
-        </div>
-
-        <div>
-          {scannedData ? (
-            <div style={S.card}>
-              <SectionLabel label="Parsed Formulation Structural Context" />
-              <h2 style={{ fontFamily: "'Bitter', serif", margin: "14px 0 6px 0" }}>{scannedData.name}</h2>
-              <div style={{ fontSize: 13, color: C.inkFade, marginBottom: 14 }}>
-                Category: {scannedData.category} · Intended Retail: £{scannedData.sell_price.toFixed(2)}
+        {showOptions && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(14, 14, 12, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+            <div style={{ background: '#ffffff', border: `1px solid ${C.paper2}`, borderRadius: '6px', width: '100%', maxWidth: '300px', padding: '16px', boxShadow: '0 12px 36px rgba(0,0,0,0.15)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', paddingBottom: '6px', borderBottom: `1px solid ${C.paper2}` }}>
+                <span style={{ fontSize: '11px', fontWeight: '700', color: C.inkFade, fontFamily: "'JetBrains Mono', monospace" }}>SELECT DOCUMENT SOURCE</span>
+                <button onClick={() => setShowOptions(false)} style={{ background: 'none', border: 'none', color: C.inkFade, fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}>×</button>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
-                {scannedData.ingredients.map((ing, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", background: "white", padding: "8px 12px", border: `1px solid ${C.paper2}`, fontSize: 13 }}>
-                    <div><strong>{ing.qty} {ing.unit}</strong> - {ing.name}</div>
-                    <div style={{ color: C.accent, fontWeight: 700 }}>£{ing.cost.toFixed(2)} / {ing.unit}</div>
-                  </div>
-                ))}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button onClick={() => { fileInputRef.current?.click(); setShowOptions(false); }} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer' }}>📁 Select File</button>
+                <button onClick={() => { photoInputRef.current?.click(); setShowOptions(false); }} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer' }}>🖼️ Select Photo</button>
+                <button onClick={handleTakePhoneOrLaptopPhoto} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer', fontWeight: '600' }}>📷 Take a photo</button>
               </div>
-              <button onClick={acceptScan} style={{ ...S.btnAccent, width: "100%", background: C.green }}>
-                Commit to Recipe Library
-              </button>
             </div>
-          ) : (
-            <div style={{ ...S.card, textAlign: "center", padding: 60, color: C.inkFade }}>
-              OCR Parser state idle. Pipeline uninitialized.
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
+        {previewUrl && !showLaptopCamera && (
+          <div style={{ background: C.paper, border: `1px solid ${C.paper2}`, padding: '24px', borderRadius: '4px' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', background: C.paper2, padding: '12px', border: `1px solid ${C.paper2}`, borderRadius: '4px', position: 'relative', marginBottom: 16 }}>
+              <img src={previewUrl} alt="Preview" style={{ maxHeight: '180px', maxWidth: '100%', objectFit: 'contain' }} />
+              <button onClick={clearStagedFile} style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(255,255,255,0.9)', border: `1px solid ${C.paper2}`, color: C.ink, borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>×</button>
+            </div>
+            {!scannedData && (
+              <button style={{ width: '100%', padding: '14px', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, background: C.green, color: '#fff', borderRadius: '4px', border: 'none' }}>
+                🔮 RUN AI RECOVERY SCHEMATICS
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
