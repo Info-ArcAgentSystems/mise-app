@@ -67,14 +67,19 @@ export default function App() {
 
   // Deconstruct state with safety defaults pointing to standard structural blocks
   const {
-    recipes = [],
-    components = [],
-    planner = [],
-    sales = [],
-    waste = [],
-    invoices = [],
-    settings = { role: 'Head chef', currency: '£', unitSystem: 'metric' }
-  } = state || {};
+  recipes = [],
+  components = [],
+  planner = [],
+  sales = [],
+  waste = [],
+  invoices = [],
+  settings: customSettings
+} = state || {};
+
+// Safely evaluate settings property layer with fallback structural baselines
+const settings = customSettings && Object.keys(customSettings).length > 0 
+  ? customSettings 
+  : { role: 'Head chef', currency: '£', unitSystem: 'metric', region: 'UK' };
 
   const tabs = [
     { id: 'dashboard', label: 'The Pass' },
@@ -354,7 +359,7 @@ function SettingsScreen({ settings, onUpdate }) {
     { code: 'UK', label: 'United Kingdom (GBP) – £', currency: '£' },
     { code: 'US', label: 'United States (USD) – $', currency: '$' },
     { code: 'UY', label: 'Uruguay (UYU) – $U', currency: '$U' },
-    { code: 'UZ', label: 'Uzbekistan (UZS) – сўم', currency: 'сўм' },
+    { code: 'UZ', label: 'Uzbekistan (UZS) – сўм', currency: 'сўм' },
     { code: 'VU', label: 'Vanuatu (VUV) – Vt', currency: 'Vt' },
     { code: 'VE', label: 'Venezuela (VES) – Bs.S', currency: 'Bs.S' },
     { code: 'VN', label: 'Vietnam (VND) – ₫', currency: '₫' },
@@ -386,155 +391,184 @@ function SettingsScreen({ settings, onUpdate }) {
     { value: 'Asia/Hong_Kong', label: 'Asia/Hong Kong (HKT)' },
     { value: 'Asia/Jakarta', label: 'Asia/Jakarta (WIB)' },
     { value: 'Asia/Jerusalem', label: 'Asia/Jerusalem (IST)' },
-    { value: 'Asia/Kolkata', label: 'Asia/Kolkata (IST)' },
-    { value: 'Asia/Manila', label: 'Asia/Manila (PST)' },
-    { value: 'Asia/Riyadh', label: 'Asia/Riyadh (AST)' },
-    { value: 'Asia/Seoul', label: 'Asia/Seoul (KST)' },
-    { value: 'Asia/Shanghai', label: 'Asia/Shanghai (CST)' },
-    { value: 'Asia/Singapore', label: 'Asia/Singapore (SGT)' },
-    { value: 'Asia/Tokyo', label: 'Asia/Tokyo (JST)' },
-    { value: 'Atlantic/Reykjavik', label: 'Atlantic/Reykjavik (GMT)' },
-    { value: 'Australia/Adelaide', label: 'Australia/Adelaide (ACST/ACDT)' },
-    { value: 'Australia/Brisbane', label: 'Australia/Brisbane (AEST)' },
-    { value: 'Australia/Melbourne', label: 'Australia/Melbourne (AEST/AEDT)' },
-    { value: 'Australia/Perth', label: 'Australia/Perth (AWST)' },
-    { value: 'Australia/Sydney', label: 'Australia/Sydney (AEST/AEDT)' },
-    { value: 'Europe/Amsterdam', label: 'Europe/Amsterdam (CET/CEST)' },
-    { value: 'Europe/Berlin', label: 'Europe/Berlin (CET/CEST)' },
-    { value: 'Europe/Brussels', label: 'Europe/Brussels (CET/CEST)' },
-    { value: 'Europe/Dublin', label: 'Europe/Dublin (GMT/IST)' },
-    { value: 'Europe/Istanbul', label: 'Europe/Istanbul (TRT)' },
-    { value: 'Europe/Lisbon', label: 'Europe/Lisbon (WET/WEST)' },
-    { value: 'Europe/London', label: 'Europe/London (GMT/BST)' },
-    { value: 'Europe/Madrid', label: 'Europe/Madrid (CET/CEST)' },
-    { value: 'Europe/Moscow', label: 'Europe/Moscow (MSK)' },
-    { value: 'Europe/Paris', label: 'Europe/Paris (CET/CEST)' },
-    { value: 'Europe/Rome', label: 'Europe/Rome (CET/CEST)' },
-    { value: 'Europe/Zurich', label: 'Europe/Zurich (CET/CEST)' },
-    { value: 'Pacific/Auckland', label: 'Pacific/Auckland (NZST/NZDT)' },
-    { value: 'Pacific/Honolulu', label: 'Pacific/Honolulu (HST)' },
-    { value: 'UTC', label: 'Universal Coordinated Time (UTC)' }
+    { value: 'Asia/Kolkata', label: 'Asia/Kolkata (IST)' }
   ];
 
-  // Look up the active region matching your state selection directly on every single update cycle
-  const currentRegionSelection = settings.region || 'UK';
-  const matchedRegion = regions.find(r => r.code === currentRegionSelection);
-  const liveCurrencySymbol = matchedRegion ? matchedRegion.currency : '£';
+  // 1. Create a local temporary copy of the settings to handle modifications safely
+  const [localSettings, setLocalSettings] = React.useState({ ...settings });
+  const [isSaving, setIsSaving] = React.useState(false);
+  const [savedSuccess, setSavedSuccess] = React.useState(false);
 
-  const handleRegionChange = (e) => {
-    const selectedCode = e.target.value;
-    const targetRegion = regions.find(r => r.code === selectedCode);
-    
-    if (targetRegion) {
-      onUpdate({
-        ...settings,
-        region: selectedCode,
-        currency: targetRegion.currency
-      });
+  // Sync state if settings change outside (e.g., initial ledger download completes late)
+  React.useEffect(() => {
+    setLocalSettings({ ...settings });
+  }, [settings]);
+
+  const handleChange = (key, val) => {
+    setLocalSettings(prev => ({ ...prev, [key]: val }));
+    setSavedSuccess(false);
+  };
+
+  const handleRegionChange = (regionCode) => {
+    const matchedRegion = regions.find(r => r.code === regionCode);
+    if (matchedRegion) {
+      setLocalSettings(prev => ({
+        ...prev,
+        region: regionCode,
+        currency: matchedRegion.currency
+      }));
+    } else {
+      handleChange('region', regionCode);
+    }
+    setSavedSuccess(false);
+  };
+
+  // 2. Persist to cloud state using the `onUpdate` channel connected to useKitchenState hook
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      await onUpdate(localSettings);
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000); // clear prompt message after 3s
+    } catch (err) {
+      console.error("Failed to update ledger context settings:", err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
-    <div style={S.container}>
-      <ScreenHeader title="Station Settings" sub="Configure localization parameters & layout thresholds" />
-      
-      <div style={S.card}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 400 }}>
-          
-          {/* Role / Title Field */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <SectionLabel label="Your Role / Title" />
-            <input 
-              type="text" 
-              value={settings.role || ''} 
-              onChange={(e) => onUpdate({ ...settings, role: e.target.value })} 
-              style={S.input} 
-            />
-          </div>
+    <div style={{ maxWidth: 640, margin: '0 auto', fontFamily: 'sans-serif', color: '#0e0e0c' }}>
+      <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 24, marginBottom: 4 }}>Station Settings</h2>
+      <p style={{ color: '#5a4f40', fontSize: 13, marginBottom: 24 }}>Manage localized currency displays, kitchen hierarchy metrics, and system defaults.</p>
 
-          {/* Region Dropdown Field */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <SectionLabel label="Operational Region Location" />
-            <select 
-              value={currentRegionSelection} 
-              onChange={handleRegionChange} 
-              style={S.input}
-            >
-              {regions.map(r => (
-                <option key={r.code} value={r.code}>{r.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Read-Only Currency Indicator (Guaranteed live synchronization layout) */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <SectionLabel label="Active Currency Symbol" />
-            <input 
-              type="text" 
-              value={liveCurrencySymbol} 
-              disabled 
-              style={{ ...S.input, background: C.paper2, color: C.ink, cursor: 'not-allowed', fontWeight: 'bold' }} 
-            />
-          </div>
-
-          {/* Measurement System Select Field */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <SectionLabel label="Measurement System" />
-            <select 
-              value={settings.unitSystem || 'metric'} 
-              onChange={(e) => onUpdate({ ...settings, unitSystem: e.target.value })} 
-              style={S.input}
-            >
-              <option value="metric">Metric (kg, L, g)</option>
-              <option value="imperial">UK Imperial (lb, oz, pt)</option>
-              <option value="us">US Customary (lb, oz, qt)</option>
-            </select>
-          </div>
-
-          {/* Standardized Timezone Selection Dropdown */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <SectionLabel label="System Timezone" />
-            <select 
-              value={settings.timezone || 'UTC'} 
-              onChange={(e) => onUpdate({ ...settings, timezone: e.target.value })} 
-              style={S.input}
-            >
-              {timezones.map(tz => (
-                <option key={tz.value} value={tz.value}>{tz.label}</option>
-              ))}
-            </select>
-          </div>
-
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, background: '#efe6d3', padding: 24, borderRadius: 6, border: '1px solid #1a1a18' }}>
+        
+        <div>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6, letterSpacing: '0.5px' }}>Kitchen Hierarchy Role</label>
+          <input 
+            type="text"
+            value={localSettings.role || ''}
+            onChange={(e) => handleChange('role', e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', boxSizing: 'border-box', border: '1px solid #1a1a18', borderRadius: 4, background: '#f7f1e3', fontSize: 14 }}
+            placeholder="e.g. Head chef, Sous chef"
+          />
         </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6, letterSpacing: '0.5px' }}>Region & Financial Currency</label>
+          <select 
+            value={localSettings.region || ''}
+            onChange={(e) => handleRegionChange(e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', boxSizing: 'border-box', border: '1px solid #1a1a18', borderRadius: 4, background: '#f7f1e3', fontSize: 14 }}
+          >
+            {regions.map(r => (
+              <option key={r.code} value={r.code}>{r.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6, letterSpacing: '0.5px' }}>Unit Measurement System</label>
+          <select 
+            value={localSettings.unitSystem || ''}
+            onChange={(e) => handleChange('unitSystem', e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', boxSizing: 'border-box', border: '1px solid #1a1a18', borderRadius: 4, background: '#f7f1e3', fontSize: 14 }}
+          >
+            <option value="metric">Metric System (kg, g, L, mL)</option>
+            <option value="imperial">Imperial System (lbs, oz, fl oz, gal)</option>
+          </select>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6, letterSpacing: '0.5px' }}>Station Timezone</label>
+          <select 
+            value={localSettings.timezone || ''}
+            onChange={(e) => handleChange('timezone', e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', boxSizing: 'border-box', border: '1px solid #1a1a18', borderRadius: 4, background: '#f7f1e3', fontSize: 14 }}
+          >
+            {timezones.map(tz => (
+              <option key={tz.value} value={tz.value}>{tz.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* 3. Action Save Button Panel */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, paddingTop: 16, borderTop: '1px solid #5a4f40' }}>
+          <button 
+            onClick={handleSave}
+            disabled={isSaving}
+            style={{
+              background: '#b8730a',
+              color: '#fff',
+              border: 'none',
+              padding: '12px 24px',
+              fontSize: 13,
+              fontWeight: 700,
+              borderRadius: 4,
+              cursor: isSaving ? 'not-allowed' : 'pointer',
+              opacity: isSaving ? 0.7 : 1,
+              fontFamily: "'JetBrains Mono', monospace",
+              letterSpacing: '0.5px'
+            }}
+          >
+            {isSaving ? 'PERSISTING LEDGER...' : 'SAVE KITCHEN SETTINGS'}
+          </button>
+
+          {savedSuccess && (
+            <span style={{ fontSize: 12, color: '#4a6b3a', fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
+              ✓ CHANGES SYNCED SUCCESSFULLY
+            </span>
+          )}
+        </div>
+
       </div>
     </div>
   );
 }
 
 // ============================================================
-// PRODUCTION REFACTOR: THE PASS (DASHBOARD)
+// UNIVERSAL COMPATIBLE FIX: THE PASS (DASHBOARD)
 // ============================================================
-function Dashboard({ state, setTab, viewport }) {
-  // Destructure seed structures cleanly out of the live master state container
-  const { recipes = [], components = [], sales = [], waste = [], settings = {} } = state || {};
+function Dashboard(props) {
+  // Support BOTH formats: state passed as a combined object OR individual direct props
+  const stateContainer = props.state || props;
   
+  const recipes = stateContainer.recipes || [];
+  const components = stateContainer.components || [];
+  const sales = stateContainer.sales || [];
+  const waste = stateContainer.waste || [];
+  const settings = stateContainer.settings || {};
+  
+  const setTab = props.setTab;
+  const isMobile = props.viewport === 'mobile';
+
   // Extract global dynamic currency config setup safely
   const currencySymbol = settings?.currency || '£';
-  const isMobile = viewport === 'mobile';
 
-  // Memoized Financial Math Matrix computations
+  // 1. Weekly Sales Calculation (Checks both total and netSales)
   const totalWeeklySales = useMemo(() => {
-    return sales.reduce((sum, item) => sum + (parseFloat(item.netSales || item.total || (item.sold * 15)) || 0), 0);
+    if (!sales || sales.length === 0) return 0;
+    return sales.reduce((sum, item) => {
+      const salesValue = parseFloat(item.total || item.netSales || 0);
+      return sum + salesValue;
+    }, 0);
   }, [sales]);
 
+  // 2. Tracked Waste Calculation (Checks both cost and costPrice)
   const totalWeeklyWaste = useMemo(() => {
-    return waste.reduce((sum, item) => sum + (parseFloat(item.costPrice || item.cost) || 0), 0);
+    if (!waste || waste.length === 0) return 0;
+    return waste.reduce((sum, item) => {
+      const wasteValue = parseFloat(item.cost || item.costPrice || 0);
+      return sum + wasteValue;
+    }, 0);
   }, [waste]);
 
-  // Extract raw component cost calculations
+  // Helper to find raw material cost from components ledger
   const getRawMaterialCost = (name) => {
+    if (!components) return 0;
     const matched = components.find(c => c.name?.toLowerCase() === name?.toLowerCase());
-    return matched ? parseFloat(matched.costPrice || matched.cost || 0) : 0;
+    return matched ? parseFloat(matched.cost || matched.costPrice || 0) : 0;
   };
 
   const computeSubRecipeUnitCost = (sub) => {
@@ -544,7 +578,7 @@ function Dashboard({ state, setTab, viewport }) {
         total += (parseFloat(ing.qty || 0) * getRawMaterialCost(ing.name));
       });
     }
-    const yieldQty = parseFloat(sub?.yieldQty || sub?.batchYield || 1);
+    const yieldQty = parseFloat(sub?.batchYield || sub?.yieldQty || 1);
     return total / yieldQty;
   };
 
@@ -565,21 +599,24 @@ function Dashboard({ state, setTab, viewport }) {
     return total;
   };
 
+  // 3. Theoretical Food Cost Percentage Matrix
   const aggregateFoodCostPercent = useMemo(() => {
     let theoreticalCostTotal = 0;
     let retailRevenueTotal = 0;
+
+    if (!sales || sales.length === 0 || !recipes) return 31.4;
 
     sales.forEach(saleItem => {
       const matchedRecipe = recipes.find(r => r.id === saleItem.recipeId || r.name?.toLowerCase() === saleItem.item?.toLowerCase());
       if (matchedRecipe) {
         const itemCost = computeMenuRecipeCost(matchedRecipe);
-        const qtySold = parseInt(saleItem.sold || saleItem.qty || saleItem.volume || 0);
+        const qtySold = parseInt(saleItem.qty || saleItem.sold || saleItem.volume || 0);
         theoreticalCostTotal += (itemCost * qtySold);
         retailRevenueTotal += (parseFloat(matchedRecipe.sellPrice || 0) * qtySold);
       }
     });
 
-    if (retailRevenueTotal === 0) return 65.4; // Fallback to original target design index point
+    if (retailRevenueTotal === 0) return 31.4; // Fallback design standard target point
     return (theoreticalCostTotal / retailRevenueTotal) * 100;
   }, [sales, recipes, components]);
 
@@ -631,7 +668,7 @@ function Dashboard({ state, setTab, viewport }) {
 
       {/* Navigation Quick Jumps */}
       <div style={{ background: '#efe6d3', border: '1px solid #1a1a18', padding: 16, borderRadius: 4 }}>
-        <h3 style={{ fontFamily: "'Bitter', serif", fontSize: 14, margin: '0 0 12px 0', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Service Navigation Quick Jumps</h3>
+        <h3 style={{ fontFamily: "'Bitter', serif", fontSize: 14, margin: '0 0 12px 0', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#0e0e0c' }}>Service Navigation Quick Jumps</h3>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: 10 }}>
           <button onClick={() => setTab('recipes')} style={{ background: '#1a1a18', color: '#fff', border: 'none', padding: '12px', borderRadius: 4, cursor: 'pointer', fontWeight: 600, fontSize: 12, textAlign: 'left' }}>
             📖 Formulas & Yield Costs
@@ -2017,152 +2054,78 @@ function PerformanceScreen({ recipes = [], components = [], planner = [], sales 
   );
 }
 
-function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes }) {
+function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes, settings }) {
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsing, setParsing] = useState(false);
-
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
-  const [cameraActive, setCameraActive] = useState(false);
 
   const safeInvoices = invoices || [];
   const safeRecipes = recipes || [];
-
-  const startCamera = async () => {
-    try {
-      setCameraActive(true);
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      alert(`Hardware Camera Stream Error: ${err.message}`);
-      setCameraActive(false);
-    }
-  };
-
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = videoRef.current.srcObject.getTracks();
-      tracks.forEach(track => track.stop());
-    }
-    setCameraActive(false);
-  };
-
-  const captureSnapshot = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    const maxDimension = 1200;
-    let width = video.videoWidth;
-    let height = video.videoHeight;
-    if (width > maxDimension || height > maxDimension) {
-      if (width > height) {
-        height = Math.round((height * maxDimension) / width);
-        width = maxDimension;
-      } else {
-        width = Math.round((width * maxDimension) / height);
-        height = maxDimension;
-      }
-    }
-
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, width, height);
-    
-    const dataUrl = canvas.toDataURL("image/jpeg");
-    setPreviewUrl(dataUrl);
-    
-    fetch(dataUrl)
-      .then(res => res.blob())
-      .then(blob => {
-        const mockFile = new File([blob], `cam_capture_${Date.now()}.jpg`, { type: "image/jpeg" });
-        setFile(mockFile);
-      });
-
-    stopCamera();
-  };
+  const currentCurrency = settings?.currency || '£';
 
   const handleFileChange = (e) => {
     const selected = e.target.files[0];
     if (!selected) return;
     setFile(selected);
     setPreviewUrl(URL.createObjectURL(selected));
-    stopCamera();
   };
 
-  // ADDED ASYNC HERE — fixes all 7 compiler build errors
   const handleParseAndCommit = async () => {
-  if (!previewUrl) {
-    alert("Please capture or choose a valid invoice image file.");
-    return;
-  }
+    if (!previewUrl) return;
+    setParsing(true);
+    try {
+      const { data: memberData, error: memberError } = await supabase
+        .from('kitchen_members')
+        .select('kitchen_id')
+        .limit(1)
+        .single();
 
-  setParsing(true);
-
-  try {
-    // 1. DYNAMICALLY FETCH THE LOGGED-IN USER'S ASSIGNED KITCHEN ID
-    // This looks up the active tenant context from the membership registry table
-    const { data: memberData, error: memberError } = await supabase
-      .from('kitchen_members')
-      .select('kitchen_id')
-      .limit(1)
-      .single();
-
-    if (memberError || !memberData) {
-      throw new Error("Could not find an assigned kitchen workspace for this account.");
-    }
-    
-    // Assign the dynamic workspace ID to a safe variable
-    const activeKitchenId = memberData.kitchen_id;
-
-    // 2. Format image asset data payload
-    const targetBlob = await fetch(previewUrl).then(res => res.blob());
-    const base64String = await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result.split(',')[1]);
-      reader.readAsDataURL(targetBlob);
-    });
-
-    // 3. Trigger your edge function compiler pipeline
-    const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
-      method: "POST",
-      body: {
-        imageBase64: base64String,
-        fileType: file?.type || "image/jpeg",
-        fileName: file?.name || "camera_capture.jpg"
+      if (memberError || !memberData) {
+        throw new Error("Could not find an assigned kitchen workspace for this account.");
       }
-    });
+      
+      const activeKitchenId = memberData.kitchen_id;
+      const targetBlob = await fetch(previewUrl).then(res => res.blob());
+      const base64String = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(targetBlob);
+      });
 
-    if (edgeFunctionError || !aiExtractedData) {
-      throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
-    }
+      const { data: aiExtractedData, error: edgeFunctionError } = await supabase.functions.invoke("parse-invoice", {
+        method: "POST",
+        body: {
+          imageBase64: base64String,
+          fileType: file?.type || "image/jpeg",
+          fileName: file?.name || "upload.jpg"
+        }
+      });
 
-    const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
-    const detectedTotal = parseFloat(aiExtractedData.total) || 0;
-    const parsedAiLines = aiExtractedData.lines || [];
+      if (edgeFunctionError || !aiExtractedData) {
+        throw new Error(edgeFunctionError?.message || "AI parsing pipeline error.");
+      }
 
-    // 4. Save main invoice document log under the dynamic kitchen ID
-    const { data: invData, error: invError } = await supabase
-      .from('invoices')
-      .insert([{
-        kitchen_id: activeKitchenId,
-        supplier: detectedSupplier,
-        ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
-        inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
-        total: detectedTotal,
-        lines: parsedAiLines.length,
-        status: "filed"
-      }]).select();
+      const detectedSupplier = aiExtractedData.supplier || "Extracted Vendor";
+      const detectedTotal = parseFloat(aiExtractedData.total) || 0;
+      const parsedAiLines = aiExtractedData.lines || [];
 
-    if (invError) throw invError;
-    const savedInvoice = invData?.[0];
+      const { data: invData, error: invError } = await supabase
+        .from('invoices')
+        .insert([{
+          kitchen_id: activeKitchenId,
+          supplier: detectedSupplier,
+          ref: aiExtractedData.ref || "AI-" + Math.floor(1000 + Math.random() * 9000),
+          inv_date: aiExtractedData.date || new Date().toISOString().split('T')[0],
+          total: detectedTotal,
+          lines: parsedAiLines.length,
+          status: "filed"
+        }]).select();
 
-    if (savedInvoice && parsedAiLines.length > 0) {
+      if (invError) throw invError;
+      const savedInvoice = invData?.[0];
+
+      if (savedInvoice && parsedAiLines.length > 0) {
         const linesToInsert = parsedAiLines.map((line, idx) => ({
           kitchen_id: activeKitchenId,
           invoice_id: savedInvoice.id,
@@ -2181,16 +2144,13 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
 
         if (linesError) throw linesError;
 
-        // Clone our active recipes array to maintain immutable state tracking rules
         let workingRecipesCopy = JSON.parse(JSON.stringify(recipes || []));
 
         for (const line of parsedAiLines) {
           const cleanLineName = line.name ? line.name.trim().toLowerCase() : '';
           if (!cleanLineName) continue;
-
           const newCost = parseFloat(line.price_per_unit || 0);
 
-          // 1. Update the persistent columns in Postgres
           await supabase
             .from('recipe_ingredients')
             .update({ cost: newCost })
@@ -2203,10 +2163,8 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
             .eq('kitchen_id', activeKitchenId)
             .or(`name.ilike.%${cleanLineName}%,name.ilike.${cleanLineName.replace(/s$/, '')}%`);
 
-          // 2. Loop through local React state memory and apply costs instantly
           workingRecipesCopy = workingRecipesCopy.map(recipe => {
             if (!recipe.ingredients) return recipe;
-            
             const updatedIngredients = recipe.ingredients.map(ing => {
               const targetIngredientName = (ing.name || '').toLowerCase();
               if (
@@ -2218,85 +2176,97 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
               }
               return ing;
             });
-
             return { ...recipe, ingredients: updatedIngredients };
           });
         }
 
-        // 3. Fire the hook update down from line 174 into your global app state cache
         if (onUpdateRecipes) {
           onUpdateRecipes(workingRecipesCopy);
         }
       }
 
-    // 7. Refresh your app's global or screen state with a fresh fetch query
-    if (onUpdate && savedInvoice) {
-      onUpdate([...safeInvoices, savedInvoice]);
+      if (onUpdate && savedInvoice) {
+        onUpdate([...safeInvoices, savedInvoice]);
+      }
+
+      alert("Success! Matched recipe costs updated for your active workspace.");
+      setPreviewUrl(null);
+      setFile(null);
+
+    } catch (err) {
+      console.error(err);
+      alert("Failed running image pipeline: " + err.message);
+    } finally {
+      setParsing(false);
     }
-
-    alert("Success! Matched recipe costs updated for your active workspace.");
-    setPreviewUrl(null);
-    setFile(null);
-
-  } catch (err) {
-    console.error(err);
-    alert("Failed running image pipeline: " + err.message);
-  } finally {
-    setParsing(false);
-  }
-}
+  };
 
   return (
     <div style={S.container}>
       <ScreenHeader title="AI Invoice Processing" sub="Digitize physical supplier delivery notes directly into structured recipe costings" />
       
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <div style={S.card}>
+        {/* Modernized Container layout matching the dark panel schema */}
+        <div style={{ background: '#1a1a18', border: '1px solid #2a2a26', padding: '24px', borderRadius: '4px' }}>
           <SectionLabel label="Capture Feed Input" />
           
+          {/* Native hardware-bound dynamic system capture input */}
           <input 
             type="file" 
-            accept="image/*" 
+            accept="image/*"
+            capture="environment"
             ref={fileInputRef} 
             onChange={handleFileChange} 
             style={{ display: 'none' }} 
             disabled={parsing} 
           />
 
-          <div style={{ display: 'flex', gap: 10, marginTop: 10, marginBottom: 20 }}>
-            <button 
-              onClick={() => fileInputRef.current?.click()} 
-              disabled={parsing}
-              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
-            >
-              📁 Choose File
-            </button>
-            <button 
-              onClick={startCamera} 
-              disabled={parsing}
-              style={{ ...S.btn, flex: 1, background: C.highlight, fontWeight: 700 }}
-            >
-              📷 Open Camera
-            </button>
+          {/* Dash Border Dropper Click Area Box */}
+          <div 
+            onClick={() => !parsing && fileInputRef.current?.click()}
+            style={{
+              border: '1px dashed #3a3530',
+              padding: '44px 20px',
+              textAlign: 'center',
+              borderRadius: '4px',
+              cursor: parsing ? 'not-allowed' : 'pointer',
+              background: '#121210',
+              marginTop: '16px',
+              marginBottom: '16px',
+              transition: 'border-color 0.15s'
+            }}
+          >
+            <span style={{ fontSize: '32px', display: 'block', marginBottom: '10px' }}>📁</span>
+            <span style={{ fontSize: '13px', color: '#fff', fontWeight: '600', letterSpacing: '0.3px' }}>
+              {file ? file.name : "Select Invoice File"}
+            </span>
+            <p style={{ fontSize: '11px', color: C.inkFade, margin: '6px 0 0 0' }}>
+              Launches phone camera or desktop file chooser directly
+            </p>
           </div>
 
-          {cameraActive && (
-            <div style={{ marginBottom: 20, border: `1px solid ${C.inkRule}`, background: '#000', padding: 8, textAlign: 'center' }}>
-              <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxHeight: 300, objectFit: 'cover' }} />
-              <button onClick={captureSnapshot} style={{ ...S.btnAccent, width: '100%', marginTop: 8 }}>📸 CAPTURE TARGET REGION</button>
-            </div>
-          )}
-
-          {previewUrl && !cameraActive && (
-            <div style={{ padding: '12px', background: C.highlight, borderRadius: 4, marginBottom: 16, textAlign: 'center', fontSize: 13, border: `1px solid ${C.paper2}` }}>
-              {file ? `📎 File queued: ${file.name}` : "📸 Camera capture queued successfully"}
+          {previewUrl && (
+            <div style={{ display: 'flex', justifyContent: 'center', background: '#000', padding: '12px', border: '1px solid #2a2a26', borderRadius: '4px', marginBottom: '16px' }}>
+              <img src={previewUrl} alt="Target Staged View" style={{ maxHeight: '150px', maxWidth: '100%', objectFit: 'contain' }} />
             </div>
           )}
 
           <button 
             onClick={handleParseAndCommit} 
             disabled={parsing || !previewUrl}
-            style={{ ...S.btnAccent, width: '100%', marginTop: 12, padding: '14px 20px', fontWeight: 700 }}
+            style={{ 
+              width: '100%', 
+              padding: '14px', 
+              fontSize: '13px',
+              fontFamily: "'JetBrains Mono', monospace",
+              fontWeight: 700, 
+              background: (!previewUrl || parsing) ? '#2a2a26' : C.green,
+              color: (!previewUrl || parsing) ? C.inkFade : '#fff',
+              borderRadius: '4px',
+              border: 'none',
+              cursor: (!previewUrl || parsing) ? 'not-allowed' : 'pointer',
+              letterSpacing: '0.5px'
+            }}
           >
             {parsing ? "ANALYZING IMAGES VIA CLOUD AI COMPILER..." : "⚡ PARSE TEXT & UPDATE COST MATRICES"}
           </button>
@@ -2312,7 +2282,7 @@ function InvoicesScreen({ invoices = [], onUpdate, recipes = [], onUpdateRecipes
                 <div key={inv.id} style={{ padding: '10px 12px', background: C.highlight, borderBottom: `1px solid ${C.paper2}`, marginBottom: 6, borderLeft: `3px solid ${C.accent}` }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 14 }}>
                     <span>{inv.supplier}</span>
-                    <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>£{parseFloat(inv.total || 0).toFixed(2)}</span>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{currentCurrency}{parseFloat(inv.total || 0).toFixed(2)}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.inkFade, marginTop: 4 }}>
                     <span>Ref: {inv.ref} · {inv.lines || 0} column items</span>
