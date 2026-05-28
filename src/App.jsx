@@ -159,57 +159,57 @@ const settings = customSettings && Object.keys(customSettings).length > 0
   return (
     <div style={S.layout}>
       {/* Desktop Sidebar Layout */}
-      {/* SIDEBAR NAVIGATION */}
-        <div 
-          className="hidden md:flex"
-          style={{
-            width: 240, 
-            background: '#0e0e0c', 
-            borderRight: `1px solid ${C.inkRule}`,
-            flexDirection: 'column', 
-            justifyContent: 'space-between', 
-            color: '#fff'
-        }} className="hidden md:flex">
-          <div style={{ padding: '20px 0', overflowY: 'auto', flex: 1 }}>
-            <div style={{ padding: '0 20px 20px 20px', borderBottom: `1px solid ${C.inkRule}`, marginBottom: 16 }}>
-              <div style={{ fontSize: 20, fontWeight: '800', fontFamily: "'serif', Georgia", letterSpacing: '1px' }}>MISE</div>
-              <div style={{ fontSize: 9, color: C.accent, letterSpacing: '0.5px', marginTop: 2, fontWeight: 700 }}>REST-OPS PLATFORM v6.4</div>
-            </div>
-
-            {navigationGroups.map((group) => (
-              <div key={group.title} style={{ marginBottom: 12 }}>
-                <div style={{ padding: '4px 20px', fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
-                  {group.title}
-                </div>
-                {group.items.map((item) => {
-                  const active = tab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => setTab(item.id)}
-                      style={{
-                        width: '100%', textAlign: 'left', background: active ? '#1a1a18' : 'transparent',
-                        border: 'none', borderLeft: active ? `4px solid ${C.accent}` : '4px solid transparent',
-                        padding: '6px 20px', cursor: 'pointer', display: 'flex', flexDirection: 'column',
-                        gap: 1, transition: 'all 0.15s ease'
-                      }}
-                    >
-                      <span style={{ fontSize: 13, fontWeight: active ? '700' : '500', color: active ? '#fff' : '#efe6d3' }}>{item.label}</span>
-                      <span style={{ fontSize: 10, color: active ? C.accent : C.inkFade }}>{item.sub}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
+      <div 
+        className="hidden md:flex"
+        style={{
+          width: 240, 
+          background: '#0e0e0c', 
+          borderRight: `1px solid ${C.inkRule}`,
+          flexDirection: 'column', 
+          justifyContent: 'space-between', 
+          color: '#fff'
+        }}
+      >
+        <div style={{ padding: '20px 0', overflowY: 'auto', flex: 1 }}>
+          <div style={{ padding: '0 20px 20px 20px', borderBottom: `1px solid ${C.inkRule}`, marginBottom: 16 }}>
+            <div style={{ fontSize: 20, fontWeight: '800', fontFamily: "'serif', Georgia", letterSpacing: '1px' }}>MISE</div>
+            <div style={{ fontSize: 9, color: C.accent, letterSpacing: '0.5px', marginTop: 2, fontWeight: 700 }}>REST-OPS PLATFORM v6.4</div>
           </div>
 
-          <div style={{ padding: 16, borderTop: `1px solid ${C.inkRule}`, background: '#0a0a09' }}>
-            <div style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Active Station</div>
-            <div style={{ fontSize: 10, color: C.inkFade, marginTop: 2, fontFamily: 'monospace' }}>
-              ID: {session?.user?.id?.slice(0, 12)}...
+          {navigationGroups.map((group) => (
+            <div key={group.title} style={{ marginBottom: 12 }}>
+              <div style={{ padding: '4px 20px', fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
+                {group.title}
+              </div>
+              {group.items.map((item) => {
+                const active = tab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setTab(item.id)}
+                    style={{
+                      width: '100%', textAlign: 'left', background: active ? '#1a1a18' : 'transparent',
+                      border: 'none', borderLeft: active ? `4px solid ${C.accent}` : '4px solid transparent',
+                      padding: '6px 20px', cursor: 'pointer', display: 'flex', flexDirection: 'column',
+                      gap: 1, transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: active ? '700' : '500', color: active ? '#fff' : '#efe6d3' }}>{item.label}</span>
+                    <span style={{ fontSize: 10, color: active ? C.accent : C.inkFade }}>{item.sub}</span>
+                  </button>
+                );
+              })}
             </div>
+          ))}
+        </div>
+
+        <div style={{ padding: 16, borderTop: `1px solid ${C.inkRule}`, background: '#0a0a09' }}>
+          <div style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Active Station</div>
+          <div style={{ fontSize: 10, color: C.inkFade, marginTop: 2, fontFamily: 'monospace' }}>
+            ID: {session?.user?.id?.slice(0, 12)}...
           </div>
         </div>
+      </div>
 
       {/* Mobile Top Bar */}
       <div style={S.mobileBar}>
