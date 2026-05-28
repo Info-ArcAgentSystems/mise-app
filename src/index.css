@@ -1,6 +1,10 @@
-/* Minimal reset. MISE's UI is entirely styled with inline styles in App.jsx
-   to keep the look consistent with the original artifact. */
+/* Custom Responsive Rules */
+.desktop-sidebar {
+  display: none !important;
+}
 
-* { box-sizing: border-box; }
-html, body, #root { margin: 0; padding: 0; min-height: 100%; }
-body { font-family: 'Bitter', Georgia, serif; }
+@media (min-width: 768px) {
+  .desktop-sidebar {
+    display: flex !important;
+  }
+}

@@ -157,25 +157,28 @@ const settings = customSettings && Object.keys(customSettings).length > 0
     signOutBtn: { background: 'none', border: 'none', color: C.red, fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: '4px 12px', borderRadius: 4, width: '100%', textAlign: 'left' }
   };
   return (
-    <div style={S.layout}>
-      {/* Desktop Sidebar Layout */}
-      <div 
-        className="hidden md:flex"
+   <div style={S.layout}>
+      
+      {/* ============================================================ */}
+      {/* 1. DESKTOP SIDEBAR: RETAINS YOUR EXACT GROUPED STYLING       */}
+      {/* ============================================================ */}
+      <aside 
         style={{
-          width: 240, 
-          background: '#0e0e0c', 
-          borderRight: `1px solid ${C.inkRule}`,
-          flexDirection: 'column', 
-          justifyContent: 'space-between', 
-          color: '#fff'
+          ...S.sidebar,
+          // CSS Fallback: Automatically completely hides the sidebar if screen width drops to mobile sizing
+          display: window.innerWidth >= 768 ? 'flex' : 'none',
+          flexDirection: 'column',
+          justifyContent: 'space-between'
         }}
       >
         <div style={{ padding: '20px 0', overflowY: 'auto', flex: 1 }}>
+          {/* Header Branding */}
           <div style={{ padding: '0 20px 20px 20px', borderBottom: `1px solid ${C.inkRule}`, marginBottom: 16 }}>
-            <div style={{ fontSize: 20, fontWeight: '800', fontFamily: "'serif', Georgia", letterSpacing: '1px' }}>MISE</div>
+            <div style={{ fontSize: 20, fontWeight: '800', fontFamily: "'serif', Georgia", letterSpacing: '1px', color: '#fff' }}>MISE</div>
             <div style={{ fontSize: 9, color: C.accent, letterSpacing: '0.5px', marginTop: 2, fontWeight: 700 }}>REST-OPS PLATFORM v6.4</div>
           </div>
 
+          {/* Core Navigation Iteration */}
           {navigationGroups.map((group) => (
             <div key={group.title} style={{ marginBottom: 12 }}>
               <div style={{ padding: '4px 20px', fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
@@ -203,60 +206,76 @@ const settings = customSettings && Object.keys(customSettings).length > 0
           ))}
         </div>
 
+        {/* Footer Area */}
         <div style={{ padding: 16, borderTop: `1px solid ${C.inkRule}`, background: '#0a0a09' }}>
           <div style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Active Station</div>
-          <div style={{ fontSize: 10, color: C.inkFade, marginTop: 2, fontFamily: 'monospace' }}>
+          <div style={{ fontSize: 10, color: C.inkFade, marginTop: 2, fontFamily: 'monospace', marginBottom: 12 }}>
             ID: {session?.user?.id?.slice(0, 12)}...
           </div>
+          <button 
+            onClick={() => supabase.auth.signOut()} 
+            style={{ ...S.signOutBtn, width: '100%', textAlign: 'center' }}
+          >
+            Leave Station
+          </button>
         </div>
-      </div>
+      </aside>
 
-      {/* Mobile Top Bar */}
-      <div style={S.mobileBar}>
+      {/* ============================================================ */}
+      {/* 2. MOBILE TOP BAR                                            */}
+      {/* ============================================================ */}
+      <div 
+        style={{
+          ...S.mobileBar,
+          display: window.innerWidth < 768 ? 'flex' : 'none'
+        }}
+      >
         <div style={{ fontFamily: "'Bitter', serif", fontWeight: 900, fontSize: 18 }}>MISE</div>
         <button onClick={() => setDrawerOpen(true)} style={S.menuBtn}>Menu</button>
       </div>
 
-        {/* MOBILE DRAWER SHEET */}
-        {drawerOpen && (
-          <div style={{
-            position: 'fixed', top: 0, left: 0, bottom: 0, width: 280,
-            background: '#0e0e0c', borderRight: `1px solid ${C.inkRule}`,
-            zIndex: 1000, display: 'flex', flexDirection: 'column', padding: '16px 0'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 16px 16px', borderBottom: `1px solid ${C.inkRule}` }}>
-              <span style={{ fontWeight: '700', letterSpacing: '1px', color: '#fff', fontSize: 13 }}>MISE CONTROLS</span>
-              <button onClick={() => setDrawerOpen(false)} style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: 20, cursor: 'pointer' }}>✕</button>
-            </div>
-            
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 0' }}>
-              {navigationGroups.map((group) => (
-                <div key={group.title} style={{ marginBottom: 14 }}>
-                  <div style={{ padding: '4px 16px', fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
-                    {group.title}
-                  </div>
-                  {group.items.map((item) => {
-                    const active = tab === item.id;
-                    return (
-                      <button
-                        key={item.id}
-                        onClick={() => { setTab(item.id); setDrawerOpen(false); }}
-                        style={{
-                          width: '100%', textAlign: 'left', background: active ? '#1a1a18' : 'transparent',
-                          border: 'none', borderLeft: active ? `4px solid ${C.accent}` : '4px solid transparent',
-                          padding: '6px 16px', display: 'flex', flexDirection: 'column', gap: 1, cursor: 'pointer'
-                        }}
-                      >
-                        <span style={{ fontSize: 13, fontWeight: active ? '700' : '500', color: active ? '#fff' : '#efe6d3' }}>{item.label}</span>
-                        <span style={{ fontSize: 10, color: active ? C.accent : C.inkFade }}>{item.sub}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
+      {/* ============================================================ */}
+      {/* 3. MOBILE DRAWER SHEET                                       */}
+      {/* ============================================================ */}
+      {drawerOpen && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, bottom: 0, width: 280,
+          background: '#0e0e0c', borderRight: `1px solid ${C.inkRule}`,
+          zIndex: 1000, display: 'flex', flexDirection: 'column', padding: '16px 0'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 16px 16px', borderBottom: `1px solid ${C.inkRule}` }}>
+            <span style={{ fontWeight: '700', letterSpacing: '1px', color: '#fff', fontSize: 13 }}>MISE CONTROLS</span>
+            <button onClick={() => setDrawerOpen(false)} style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: 20, cursor: 'pointer' }}>✕</button>
           </div>
-        )}
+          
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 0' }}>
+            {navigationGroups.map((group) => (
+              <div key={group.title} style={{ marginBottom: 14 }}>
+                <div style={{ padding: '4px 16px', fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
+                  {group.title}
+                </div>
+                {group.items.map((item) => {
+                  const active = tab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => { setTab(item.id); setDrawerOpen(false); }}
+                      style={{
+                        width: '100%', textAlign: 'left', background: active ? '#1a1a18' : 'transparent',
+                        border: 'none', borderLeft: active ? `4px solid ${C.accent}` : '4px solid transparent',
+                        padding: '6px 16px', display: 'flex', flexDirection: 'column', gap: 1, cursor: 'pointer'
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: active ? '700' : '500', color: active ? '#fff' : '#efe6d3' }}>{item.label}</span>
+                      <span style={{ fontSize: 10, color: active ? C.accent : C.inkFade }}>{item.sub}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Render Active Functional Screens */}
       <div style={S.main}>
