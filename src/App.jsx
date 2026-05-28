@@ -81,21 +81,57 @@ const settings = customSettings && Object.keys(customSettings).length > 0
   ? customSettings 
   : { role: 'Head chef', currency: '£', unitSystem: 'metric', region: 'UK' };
 
-  const tabs = [
-    { id: 'dashboard', label: 'The Pass' },
-    { id: 'planner', label: 'Weekly Planner' },
-    { id: 'recipes', label: 'Recipes & Costs' },
-    { id: 'prep', label: 'Prep Sheets' },
-    { id: 'shopping', label: 'Orders & Lists' },
-    { id: 'sales', label: 'Sales Analytics' },
-    { id: 'waste', label: 'Waste Tracker' },
-    { id: 'performance', label: 'Financials' },
-    { id: 'sous', label: 'Sous AI' },
-    { id: 'invoices', label: 'Invoice Scan' },
-    { id: 'suppliers', label: 'Market Intel' },
-    { id: 'pos', label: 'POS Sync' },
-    { id: 'scan', label: 'Recipe Digitizer' },
-    { id: 'settings', label: 'Settings' }
+  const tabs = ['dashboard', 'servicereport', 'scan', 'archive', 'digitizer', 'recipes', 'planner', 'prep', 'sales', 'waste', 'intel', 'shopping', 'engineering', 'sous', 'settings'];
+
+  // ============================================================
+  // SPEC-ALIGNED INFORMATION ARCHITECTURE (6 CORE SECTIONS)
+  // ============================================================
+  const navigationGroups = [
+    {
+      title: "1. OVERVIEW",
+      items: [
+        { id: 'dashboard', label: 'The Pass', sub: 'Operational Summary' },
+        { id: 'servicereport', label: 'Service Report', sub: 'Daily Debrief' }
+      ]
+    },
+    {
+      title: "2. INGESTION",
+      items: [
+        { id: 'scan', label: 'Invoice Scan', sub: 'Scan & Verify' },
+        { id: 'archive', label: 'Invoice Archive', sub: 'Historical Logs' },
+        { id: 'digitizer', label: 'Recipe Digitizer', sub: 'AI Text Isolation' }
+      ]
+    },
+    {
+      title: "3. FORMULATION",
+      items: [
+        { id: 'recipes', label: 'Recipes & Costs', sub: 'Yield Matrices' }
+      ]
+    },
+    {
+      title: "4. PRODUCTION",
+      items: [
+        { id: 'planner', label: 'Covers Planner', sub: 'Production Volumes' },
+        { id: 'prep', label: 'Prep Schedule', sub: 'Task Tracking' },
+        { id: 'sales', label: 'Sales Tracker', sub: 'Revenue Input' },
+        { id: 'waste', label: 'Waste Tracker', sub: 'Variance Matrix' }
+      ]
+    },
+    {
+      title: "5. INTELLIGENCE",
+      items: [
+        { id: 'shopping', label: 'Market Shopping', sub: 'Dynamic Orders' },
+        { id: 'intel', label: 'Suppliers & History', sub: 'Purchasing Matrix' },
+        { id: 'engineering', label: 'Menu Engineering', sub: 'Performance Quadrants' }
+      ]
+    },
+    {
+      title: "6. SYSTEM",
+      items: [
+        { id: 'sous', label: 'Sous AI', sub: 'Operational Chat' },
+        { id: 'settings', label: 'Settings', sub: 'Context Control' }
+      ]
+    }
   ];
 // Fix mobile layout spilling bounds by calculating responsive display configuration states dynamically
   const isMobileView = typeof window !== 'undefined' && window.innerWidth < 768;
@@ -123,34 +159,51 @@ const settings = customSettings && Object.keys(customSettings).length > 0
   return (
     <div style={S.layout}>
       {/* Desktop Sidebar Layout */}
-      <aside style={S.sidebar}>
-        <div style={S.logoArea}>
-          <div style={S.logoIcon}>皿</div>
-          <div>
-            <div style={S.logoText}>MISE</div>
-            <div style={S.logoSub}>{settings.role}</div>
+      {/* SIDEBAR NAVIGATION */}
+        <div style={{
+          width: 240, background: '#0e0e0c', borderRight: `1px solid ${C.inkRule}`,
+          display: 'flex', flexDirection: 'column', justifyContent: 'space-between', color: '#fff'
+        }} className="hidden md:flex">
+          <div style={{ padding: '20px 0', overflowY: 'auto', flex: 1 }}>
+            <div style={{ padding: '0 20px 20px 20px', borderBottom: `1px solid ${C.inkRule}`, marginBottom: 16 }}>
+              <div style={{ fontSize: 20, fontWeight: '800', fontFamily: "'serif', Georgia", letterSpacing: '1px' }}>MISE</div>
+              <div style={{ fontSize: 9, color: C.accent, letterSpacing: '0.5px', marginTop: 2, fontWeight: 700 }}>REST-OPS PLATFORM v6.4</div>
+            </div>
+
+            {navigationGroups.map((group) => (
+              <div key={group.title} style={{ marginBottom: 12 }}>
+                <div style={{ padding: '4px 20px', fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
+                  {group.title}
+                </div>
+                {group.items.map((item) => {
+                  const active = tab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => setTab(item.id)}
+                      style={{
+                        width: '100%', textAlign: 'left', background: active ? '#1a1a18' : 'transparent',
+                        border: 'none', borderLeft: active ? `4px solid ${C.accent}` : '4px solid transparent',
+                        padding: '6px 20px', cursor: 'pointer', display: 'flex', flexDirection: 'column',
+                        gap: 1, transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: active ? '700' : '500', color: active ? '#fff' : '#efe6d3' }}>{item.label}</span>
+                      <span style={{ fontSize: 10, color: active ? C.accent : C.inkFade }}>{item.sub}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ padding: 16, borderTop: `1px solid ${C.inkRule}`, background: '#0a0a09' }}>
+            <div style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Active Station</div>
+            <div style={{ fontSize: 10, color: C.inkFade, marginTop: 2, fontFamily: 'monospace' }}>
+              ID: {session?.user?.id?.slice(0, 12)}...
+            </div>
           </div>
         </div>
-        <nav style={S.nav}>
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{ ...S.navLink, ...(tab === t.id ? S.navLinkActive : {}) }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-        <div style={S.sidebarFooter}>
-          <div style={{ fontSize: 11, color: C.inkFade, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {session.user.email}
-          </div>
-          <button onClick={handleSignOut} style={S.signOutBtn}>
-            Leave Station
-          </button>
-        </div>
-      </aside>
 
       {/* Mobile Top Bar */}
       <div style={S.mobileBar}>
@@ -158,38 +211,66 @@ const settings = customSettings && Object.keys(customSettings).length > 0
         <button onClick={() => setDrawerOpen(true)} style={S.menuBtn}>Menu</button>
       </div>
 
-      {/* Mobile Responsive Nav Drawer */}
-      {drawerOpen && (
-        <div style={S.drawerOverlay} onClick={() => setDrawerOpen(false)}>
-          <div style={S.drawer} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
-              <div style={{ fontFamily: "'Bitter', serif", fontWeight: 900 }}>NAVIGATION</div>
-              <button onClick={() => setDrawerOpen(false)} style={S.closeBtn}>✕</button>
+        {/* MOBILE DRAWER SHEET */}
+        {drawerOpen && (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, bottom: 0, width: 280,
+            background: '#0e0e0c', borderRight: `1px solid ${C.inkRule}`,
+            zIndex: 1000, display: 'flex', flexDirection: 'column', padding: '16px 0'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 16px 16px', borderBottom: `1px solid ${C.inkRule}` }}>
+              <span style={{ fontWeight: '700', letterSpacing: '1px', color: '#fff', fontSize: 13 }}>MISE CONTROLS</span>
+              <button onClick={() => setDrawerOpen(false)} style={{ background: 'transparent', border: 'none', color: '#fff', fontSize: 20, cursor: 'pointer' }}>✕</button>
             </div>
-            <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {tabs.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => {
-                    setTab(t.id);
-                    setDrawerOpen(false);
-                  }}
-                  style={{ ...S.drawerLink, ...(tab === t.id ? S.drawerLinkActive : {}) }}
-                >
-                  {t.label}
-                </button>
+            
+            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 0' }}>
+              {navigationGroups.map((group) => (
+                <div key={group.title} style={{ marginBottom: 14 }}>
+                  <div style={{ padding: '4px 16px', fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
+                    {group.title}
+                  </div>
+                  {group.items.map((item) => {
+                    const active = tab === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => { setTab(item.id); setDrawerOpen(false); }}
+                        style={{
+                          width: '100%', textAlign: 'left', background: active ? '#1a1a18' : 'transparent',
+                          border: 'none', borderLeft: active ? `4px solid ${C.accent}` : '4px solid transparent',
+                          padding: '6px 16px', display: 'flex', flexDirection: 'column', gap: 1, cursor: 'pointer'
+                        }}
+                      >
+                        <span style={{ fontSize: 13, fontWeight: active ? '700' : '500', color: active ? '#fff' : '#efe6d3' }}>{item.label}</span>
+                        <span style={{ fontSize: 10, color: active ? C.accent : C.inkFade }}>{item.sub}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               ))}
-            </nav>
-            <div style={{ marginTop: 'auto', paddingTop: 20 }}>
-              <button onClick={handleSignOut} style={S.signOutBtn}>Leave Station</button>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Render Active Functional Screens */}
       <div style={S.main}>
         {tab === 'dashboard' && <Dashboard recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
+        {/* ============================================================ */}
+          {/* TAB 1.2: SERVICE REPORT (DAILY DEBRIEF) - ARCHITECTURE SHELL */}
+          {/* ============================================================ */}
+          {tab === 'servicereport' && (
+            <div style={{ padding: 24, maxWidth: 1000, margin: '0 auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16, marginBottom: 20 }}>
+                <div>
+                  <h2 style={{ fontSize: 24, margin: 0, fontFamily: "'serif', Georgia" }}>Service Report</h2>
+                  <p style={{ margin: '4px 0 0 0', color: C.inkFade, fontSize: 13 }}>Daily service debrief narrative, team commendations, and prioritised actions.</p>
+                </div>
+              </div>
+              <div style={{ padding: '40px 20px', background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, textAlign: 'center', color: C.inkFade, fontSize: 14 }}>
+                📭 Service Report Data Stream Initialized. Ready for operational review implementation.
+              </div>
+            </div>
+          )}
         {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={(val) => update({ planner: val })} />}
         {tab === 'recipes' && <RecipesScreen recipes={recipes} components={components} settings={settings} onUpdateRecipes={(val) => update({ recipes: val })} onUpdateComponents={(val) => update({ components: val })} />}
         {tab === 'prep' && <PrepScreen planner={planner} recipes={recipes} components={components} />}
