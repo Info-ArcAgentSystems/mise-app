@@ -160,9 +160,15 @@ const settings = customSettings && Object.keys(customSettings).length > 0
     <div style={S.layout}>
       {/* Desktop Sidebar Layout */}
       {/* SIDEBAR NAVIGATION */}
-        <div style={{
-          width: 240, background: '#0e0e0c', borderRight: `1px solid ${C.inkRule}`,
-          display: 'flex', flexDirection: 'column', justifyContent: 'space-between', color: '#fff'
+        <div 
+          className="hidden md:flex"
+          style={{
+            width: 240, 
+            background: '#0e0e0c', 
+            borderRight: `1px solid ${C.inkRule}`,
+            flexDirection: 'column', 
+            justifyContent: 'space-between', 
+            color: '#fff'
         }} className="hidden md:flex">
           <div style={{ padding: '20px 0', overflowY: 'auto', flex: 1 }}>
             <div style={{ padding: '0 20px 20px 20px', borderBottom: `1px solid ${C.inkRule}`, marginBottom: 16 }}>
