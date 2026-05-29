@@ -118,45 +118,51 @@ const settings = customSettings && Object.keys(customSettings).length > 0
   // ============================================================
   // ARCHITECTURE NAVIGATION SIDEBAR RE-GROUPING (BASELINE SPEC)
   // ============================================================
+  // ============================================================
+  // ARCHITECTURE SIDEBAR GROUPING (IDS PERFECTLY ALIGNED WITH SCREENS)
+  // ============================================================
+  // ============================================================
+  // ARCHITECTURE SIDEBAR GROUPING (IDS DESIGNATED PERFECTLY WITH INTERNAL ROUTER SWITCHES)
+  // ============================================================
   const navigationGroups = [
     {
       title: "OVERVIEW",
       items: [
-        { id: 'dashboard', num: '00', label: 'The Pass', sub: 'Live shift reporting & KPIs' },
-        { id: 'service-report', num: '—', label: 'Service Report', sub: 'Shift operational log sheets' }
+        { id: 'dashboard', label: 'The Pass', sub: 'Live shift reporting & KPIs' },
+        { id: 'servicereport', label: 'Service Report', sub: 'Shift operational log sheets' }
       ]
     },
     {
       title: "CAPTURE LOGS",
       items: [
-        { id: 'recipe-digitizer', num: '01', label: 'Recipe Digitizer', sub: 'AI parsing & yield extraction' },
-        { id: 'invoice-scan', num: '10', label: 'Invoice Scan', sub: 'Accounts supplier auditing' }
+        { id: 'scan', label: 'Recipe Digitizer', sub: 'AI parsing & yield extraction' },
+        { id: 'invoices', label: 'Invoice Scan', sub: 'Accounts supplier auditing' }
       ]
     },
     {
       title: "KITCHEN MANAGEMENT",
       items: [
-        { id: 'recipes', num: '02', label: 'Recipes & Costs', sub: 'Gross Profit engineering matrix' },
-        { id: 'planner', num: '03', label: 'Weekly Planner', sub: 'Production covers allocation' },
-        { id: 'prep-sheets', num: '05', label: 'Prep Sheets', sub: 'Batch multiplying targets' }
+        { id: 'recipes', label: 'Recipes & Costs', sub: 'Gross Profit engineering matrix' },
+        { id: 'planner', label: 'Weekly Planner', sub: 'Production covers allocation' },
+        { id: 'prep', label: 'Prep Sheets', sub: 'Batch multiplying targets' }
       ]
     },
     {
       title: "INTELLIGENCE & INTEL",
       items: [
-        { id: 'orders', num: '04', label: 'Orders & Lists', sub: 'Market supplier buying schedules' },
-        { id: 'sales-analytics', num: '06', label: 'Sales Analytics', sub: 'Financial ledger ingestion logs' },
-        { id: 'waste-tracker', num: '07', label: 'Waste Tracker', sub: 'Structural volume shrink records' }
+        { id: 'shopping', label: 'Orders & Lists', sub: 'Market supplier buying schedules' },
+        { id: 'sales', label: 'Sales Analytics', sub: 'Financial ledger ingestion logs' },
+        { id: 'waste', label: 'Waste Tracker', sub: 'Structural volume shrink records' }
       ]
     },
     {
       title: "OPERATIONS CORE",
       items: [
-        { id: 'financials', num: '08', label: 'Financials Matrix', sub: 'Integrated restaurant profit & loss' },
-        { id: 'sous-ai', num: '09', label: 'Sous AI Coach', sub: 'Core conversational prompt engine' },
-        { id: 'market-intel', num: '11', label: 'Market Intel', sub: 'Ingredient supplier benchmarking' },
-        { id: 'pos-sync', num: '12', label: 'POS Sync Gateway', sub: 'Automated live machine extraction' },
-        { id: 'settings', num: '13', label: 'Station Settings', sub: 'System region configurations' }
+        { id: 'performance', label: 'Financials Matrix', sub: 'Integrated restaurant profit & loss' },
+        { id: 'sous', label: 'Sous AI Coach', sub: 'Core conversational prompt engine' },
+        { id: 'suppliers', label: 'Market Intel', sub: 'Ingredient supplier benchmarking' },
+        { id: 'pos', label: 'POS Sync Gateway', sub: 'Automated live machine extraction' },
+        { id: 'settings', label: 'Station Settings', sub: 'System region configurations' }
       ]
     }
   ];
@@ -318,27 +324,13 @@ const settings = customSettings && Object.keys(customSettings).length > 0
       )}
 
       {/* Render Active Functional Screens */}
+      {/* Render Active Functional Screens */}
+      {/* Render Active Functional Screens */}
       <div style={S.main}>
         {tab === 'dashboard' && <Dashboard recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
-        {/* ============================================================ */}
-          {/* TAB 1.2: SERVICE REPORT (DAILY DEBRIEF) - ARCHITECTURE SHELL */}
-          {/* ============================================================ */}
-          {tab === 'servicereport' && (
-            <div style={{ padding: 24, maxWidth: 1000, margin: '0 auto' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16, marginBottom: 20 }}>
-                <div>
-                  <h2 style={{ fontSize: 24, margin: 0, fontFamily: "'serif', Georgia" }}>Service Report</h2>
-                  <p style={{ margin: '4px 0 0 0', color: C.inkFade, fontSize: 13 }}>Daily service debrief narrative, team commendations, and prioritised actions.</p>
-                </div>
-              </div>
-              <div style={{ padding: '40px 20px', background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, textAlign: 'center', color: C.inkFade, fontSize: 14 }}>
-                📭 Service Report Data Stream Initialized. Ready for operational review implementation.
-              </div>
-            </div>
-          )}
+        {tab === 'servicereport' && <ServiceReport recipes={recipes || []} components={components || []} sales={sales || []} waste={waste || []} planner={planner || []} settings={settings || {}} />}
         {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={(val) => update({ planner: val })} />}
-        {tab === 'service-report' && <ServiceReport settings={state?.settings || {}} />}
-        {tab === 'recipes' && <RecipesScreen recipes={recipes} components={components} settings={settings} onUpdateRecipes={(val) => update({ recipes: val })} onUpdateComponents={(val) => update({ components: val })} />}
+        {tab === 'recipes' && <RecipesScreen recipes={recipes || []} components={components || []} settings={settings || {}} onUpdateRecipes={(val) => update({ recipes: val })} onUpdateComponents={(val) => update({ components: val })} />}
         {tab === 'prep' && <PrepScreen planner={planner} recipes={recipes} components={components} />}
         {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={recipes} components={components} />}
         {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
@@ -348,22 +340,21 @@ const settings = customSettings && Object.keys(customSettings).length > 0
         {tab === 'invoices' && <InvoicesScreen supabase={supabase} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
         {tab === 'suppliers' && <SuppliersScreen />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
-        {tab === 'scan' && <ScanScreen recipes={recipes} onUpdate={(val) => update({ recipes: val })} />}
         {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} />}
+        
+        {/* CONNECTED SECURELY TO THE CORRECT SCREEN WRAPPER */}
+        {tab === 'scan' && (
+          <ScanScreen 
+            recipes={recipes || []} 
+            onUpdateRecipes={(val) => update({ recipes: val })} 
+            settings={settings || {}} 
+          />
+        )}
       </div>
     </div>
   );
 }
 
-// ============================================================
-// EVERYTHING BELOW THIS LINE IS UNCHANGED FROM YOUR ORIGINAL ARTIFACT
-// ============================================================
-// ============================================================
-// RESOLVED ARCHITECTURE ALIGNMENT: SETTINGS SCREEN CONFIG PANEL
-// ============================================================
-// ============================================================
-// ARCHITECTURE FIX: STATE SYNCHRONIZATION & DROP-DOWN ANCHORS
-// ============================================================
 // ============================================================
 // COMPREHENSIVE RE-ANCHOR: STATE SYNCHRONIZATION FOR DROPDOWNS
 // ============================================================
@@ -699,62 +690,178 @@ function SettingsScreen({ settings, onUpdate }) {
 // ============================================================
 // CORE FUNCTIONAL FIX: THE SERVICE REPORT COMPONENT (RESTORED)
 // ============================================================
-function ServiceReport({ settings }) {
+function ServiceReport({ recipes = [], components = [], sales = [], waste = [], planner = [], settings = {} }) {
+  const [loading, setLoading] = useState(false);
+  const [generatedReport, setGeneratedReport] = useState(null);
+  const [errorLog, setErrorLog] = useState("");
   const currencySymbol = settings?.currency || '£';
-  const [shiftLog, setShiftLog] = React.useState({
-    coversActual: 42,
-    coversTarget: 50,
-    headChef: "Head Chef",
-    operationalNotes: "Smooth dinner service. Yield on short-rib extraction hit target perfectly. Slight delay on cold larder station during mid-shift rush.",
-    layoutDefects: "Low pressure on pastry station rinse spray."
-  });
+
+  // Compute summary metrics with fallback provisions
+  const computedMetrics = useMemo(() => {
+    let totalRevenue = 0;
+    let materialCost = 0;
+    
+    if (Array.isArray(sales)) {
+      sales.forEach(s => {
+        const r = Array.isArray(recipes) ? recipes.find(x => x.id === s.recipeId) : null;
+        if (r) {
+          totalRevenue += (Number(s.sold || 0) * (Number(r.sellPrice || 0)));
+          materialCost += (Number(s.sold || 0) * (Number(r.sellPrice || 0)) * 0.3); 
+        }
+      });
+    }
+
+    const leakCost = Array.isArray(waste) ? waste.reduce((acc, w) => acc + (parseFloat(w.cost) || 0), 0) : 0;
+    const grossProfit = totalRevenue - materialCost - leakCost;
+    const efficiencyPct = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+
+    return {
+      totalRevenue,
+      leakCost,
+      grossProfit,
+      efficiencyPct,
+      salesCount: Array.isArray(sales) ? sales.length : 0,
+      wasteCount: Array.isArray(waste) ? waste.length : 0
+    };
+  }, [recipes, sales, waste]);
+
+  const handleCompileWeeklyAIReport = async () => {
+    setLoading(true);
+    setErrorLog("");
+    
+    const analyticsContext = {
+      recipes: (recipes || []).map(r => ({ name: r.name, category: r.category, yield: r.yield })),
+      salesSummary: { totalEntries: (sales || []).length, estimatedRevenue: computedMetrics.totalRevenue },
+      wasteLogs: (waste || []).map(w => ({ item: w.ingredientName || w.name, cost: w.cost, reason: w.reason })),
+      plannerCovers: planner || []
+    };
+
+    const compilationQuery = `Provide a concise 4-bullet point weekly management operational debrief. Break down financial achievements based on ${currencySymbol}${computedMetrics.totalRevenue.toFixed(2)} revenue, specify optimization paths for preventing the ${currencySymbol}${computedMetrics.leakCost.toFixed(2)} waste leakage, and highlight any menu engineering recommendations. Use short, professional, action-driven sentences.`;
+
+    try {
+      const { data, error } = await supabase.functions.invoke('sous-chat', {
+        body: { 
+          prompt: compilationQuery, 
+          context: analyticsContext 
+        }
+      });
+
+      if (error) throw error;
+
+      if (data && data.reply) {
+        setGeneratedReport(data.reply);
+      } else {
+        setGeneratedReport("Heard. Report generated successfully but returned an empty structural analysis.");
+      }
+    } catch (err) {
+      console.error("AI Report compiler exception:", err);
+      setErrorLog(err.message || "Failed to connect to the AI engine.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div style={{ maxWidth: 800, margin: '0 auto', color: '#0e0e0c' }}>
-      {/* Header section */}
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 24, margin: '0 0 4px 0' }}>Service Report</h2>
-        <p style={{ margin: 0, fontSize: 13, color: '#5a4f40' }}>Daily shift log sheets, cover margins, and station mechanical breakdowns</p>
+    <div style={{ color: C.ink, width: '100%', minHeight: '80vh', boxSizing: 'border-box' }}>
+      
+      {/* HEADER SECTION */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16, marginBottom: 24 }}>
+        <div>
+          <h2 style={{ fontSize: 24, margin: 0, fontFamily: "'serif', Georgia", fontWeight: '800', color: C.ink }}>Weekly Service Report</h2>
+          <p style={{ margin: '4px 0 0 0', color: C.inkFade, fontSize: 13 }}>
+            Automated intelligence compilation. Syncs sales matrices and waste logs via OpenAI analysis vectors.
+          </p>
+        </div>
+        <button
+          onClick={handleCompileWeeklyAIReport}
+          disabled={loading}
+          style={{
+            background: '#121210',
+            color: '#fff',
+            border: `1px solid ${C.inkRule}`,
+            padding: '10px 20px',
+            fontWeight: '700',
+            fontSize: '12px',
+            borderRadius: '4px',
+            cursor: loading ? 'not-allowed' : 'pointer',
+            opacity: loading ? 0.7 : 1,
+            fontFamily: "'JetBrains Mono', monospace",
+            letterSpacing: '0.5px'
+          }}
+        >
+          {loading ? "COMPILING LEDGER ATOMICS..." : "✨ Generate Weekly AI Report"}
+        </button>
       </div>
 
-      {/* Grid Summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 24 }}>
-        <div style={{ background: '#efe6d3', padding: 16, borderRadius: 4, border: '1px solid #1a1a18' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#5a4f40' }}>Shift Supervisor</div>
-          <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4 }}>{shiftLog.headChef}</div>
+      {errorLog && (
+        <div style={{ background: C.red, color: '#fff', padding: '12px 16px', borderRadius: 4, marginBottom: 20, fontSize: 13, fontWeight: 600 }}>
+          ⚠️ System Compiler Error: {errorLog}
         </div>
-        <div style={{ background: '#efe6d3', padding: 16, borderRadius: 4, border: '1px solid #1a1a18' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#5a4f40' }}>Covers (Actual / Target)</div>
-          <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4, color: shiftLog.coversActual >= shiftLog.coversTarget ? '#4a6b3a' : '#b8362a' }}>
-            {shiftLog.coversActual} / {shiftLog.coversTarget}
+      )}
+
+      {/* FIXED GRID: GRID GAP AND WRAP ALIGNMENT */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24, width: '100%' }}>
+        
+        {/* REVENUE CARD */}
+        <div style={{ background: C.paper2, padding: 16, borderRadius: 4, border: `1px solid ${C.inkRule}`, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: C.inkFade, letterSpacing: '0.5px' }}>Aggregated Revenue Intake</div>
+            <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6, fontFamily: 'monospace', color: C.ink }}>
+              {currencySymbol}{computedMetrics.totalRevenue.toFixed(2)}
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: C.inkFade, marginTop: 8 }}>From {computedMetrics.salesCount} active item logs</div>
+        </div>
+        
+        {/* WASTE CARD */}
+        <div style={{ background: C.paper2, padding: 16, borderRadius: 4, border: `1px solid ${C.inkRule}`, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: C.inkFade, letterSpacing: '0.5px' }}>Trash Leakage Cost</div>
+            <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6, fontFamily: 'monospace', color: computedMetrics.leakCost > 0 ? C.red : C.ink }}>
+              {currencySymbol}{computedMetrics.leakCost.toFixed(2)}
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: C.inkFade, marginTop: 8 }}>Over {computedMetrics.wasteCount} recorded variances</div>
+        </div>
+
+        {/* EFFICIENCY CARD */}
+        <div style={{ background: C.paper2, padding: 16, borderRadius: 4, border: `1px solid ${C.inkRule}`, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: C.inkFade, letterSpacing: '0.5px' }}>Estimated Profit Efficiency</div>
+            <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6, fontFamily: 'monospace', color: C.green }}>
+              {computedMetrics.efficiencyPct.toFixed(1)}%
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: C.inkFade, marginTop: 8 }}>Target baseline performance: 70%</div>
+        </div>
+      </div>
+
+      {/* CORE ANALYSIS BOX */}
+      <div style={{ background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, padding: 24, minHeight: 250, width: '100%', boxSizing: 'border-box' }}>
+        <div style={{ borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 10, marginBottom: 16 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+            Operational Performance Analysis Matrix
           </div>
         </div>
-        <div style={{ background: '#efe6d3', padding: 16, borderRadius: 4, border: '1px solid #1a1a18' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#5a4f40' }}>Operational Yield Status</div>
-          <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4, color: '#4a6b3a' }}>VERIFIED STABLE</div>
-        </div>
+
+        {loading ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 180, color: C.inkFade }}>
+            <span style={{ fontSize: 24, marginBottom: 12 }}>⏳</span>
+            <div style={{ fontSize: 12, fontWeight: 700, fontFamily: 'monospace', letterSpacing: '1px' }}>SOUS AI COMPILING METRIC ATTRIBUTES...</div>
+          </div>
+        ) : generatedReport ? (
+          <div style={{ fontSize: 14, color: C.ink, lineHeight: '1.6', whiteSpace: 'pre-wrap', fontFamily: 'sans-serif' }}>
+            {generatedReport}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 180, color: C.inkFade, textAlign: 'center' }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📊</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>Ledger Data Streams Initialized.</div>
+            <div style={{ fontSize: 11, marginTop: 4, color: C.inkFade }}>Click the generation switch above to route logs directly into automated AI summary matrices.</div>
+          </div>
+        )}
       </div>
 
-      {/* Narrative logs */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, background: '#f7f1e3', padding: 20, borderRadius: 4, border: '1px solid #1a1a18' }}>
-        <div>
-          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Shift Operations Narrative</label>
-          <textarea 
-            value={shiftLog.operationalNotes}
-            onChange={(e) => setShiftLog(prev => ({ ...prev, operationalNotes: e.target.value }))}
-            style={{ width: '100%', minHeight: 80, padding: 10, boxSizing: 'border-box', border: '1px solid #1a1a18', borderRadius: 4, background: '#efe6d3', fontSize: 13, lineHeight: 1.5 }}
-          />
-        </div>
-
-        <div>
-          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Station Layout & Mechanical Defects</label>
-          <textarea 
-            value={shiftLog.layoutDefects}
-            onChange={(e) => setShiftLog(prev => ({ ...prev, layoutDefects: e.target.value }))}
-            style={{ width: '100%', minHeight: 60, padding: 10, boxSizing: 'border-box', border: '1px solid #1a1a18', borderRadius: 4, background: '#efe6d3', fontSize: 13, lineHeight: 1.5 }}
-          />
-        </div>
-      </div>
     </div>
   );
 }
@@ -960,415 +1067,223 @@ function PlannerScreen({ planner, onUpdate }) {
   );
 }
 
+// COMPRESSED SPEC: SPECIFICALLY CAPTURED RECIPE ARCHIVE HUB
 // ============================================================
-// RECIPES & COSTS SCREEN (Adapted to match App state)
-// ============================================================
-function RecipesScreen({ recipes, components, onUpdateRecipes, onUpdateComponents, settings }) {
-  const [activeTab, setActiveTab] = useState('menu'); // 'menu' or 'sub'
-  const [selectedId, setSelectedId] = useState(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filterCategory, setFilterCategory] = useState('All');
-
-  // New Ingredient Mode States
-  const [ingKind, setIngKind] = useState('raw'); // 'raw' or 'sub'
-  const [ingId, setIngId] = useState('');
-  const [ingQty, setIngQty] = useState('');
-
-  // Fallback to safe character if empty
+function RecipesScreen({ recipes = [], components = [], settings = {}, onUpdateRecipes, onUpdateComponents }) {
+  const [selectedRecipe, setSelectedRecipe] = useState(null);
+  const [selectedComponent, setSelectedComponent] = useState(null);
+  const [activeSubTab, setActiveSubTab] = useState('menu_items'); // menu_items | sub_batches
   const currencySymbol = settings?.currency || '£';
 
-  // Helper to find raw material cost from components ledger
-  const getRawMaterialCost = (name, unit) => {
-    const item = components.find(i => i.name?.toLowerCase() === name?.toLowerCase());
-    if (!item) return 0;
-    return item.costPrice || item.cost || 0; 
-  };
-
-  // Helper to compute sub-recipe total cost per unit
-  const computeSubRecipeCostPerUnit = (sub) => {
-    let total = 0;
-    if (sub && sub.ingredients) {
-      sub.ingredients.forEach(ing => {
-        const rawCost = getRawMaterialCost(ing.name, ing.unit);
-        total += (ing.qty * rawCost);
-      });
-    }
-    const yieldQty = sub?.yieldQty || sub?.batchYield || 1;
-    return total / yieldQty;
-  };
-
-  // Helper to compute menu recipe food cost
-  const computeRecipeCost = (recipe) => {
-    let total = 0;
-    if (recipe && recipe.ingredients) {
-      recipe.ingredients.forEach(ing => {
-        if (ing.kind === 'sub') {
-          const sub = components.find(s => s.id === ing.id || s.name === ing.name);
-          if (sub) {
-            const costPerUnit = computeSubRecipeCostPerUnit(sub);
-            total += (ing.qty * costPerUnit);
-          }
-        } else {
-          const rawCost = getRawMaterialCost(ing.name, ing.unit);
-          total += (ing.qty * rawCost);
-        }
-      });
-    }
-    return total;
-  };
-
-  const filteredRecipes = recipes ? recipes.filter(r => {
-    const matchesSearch = r.name?.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesCat = filterCategory === 'All' || r.category === filterCategory;
-    return matchesSearch && matchesCat;
-  }) : [];
-
-  const filteredSubs = components ? components.filter(s => 
-    s.name?.toLowerCase().includes(searchTerm.toLowerCase())
-  ) : [];
-
-  const currentRecipe = activeTab === 'menu' 
-    ? (recipes ? recipes.find(r => r.id === selectedId) : null)
-    : (components ? components.find(s => s.id === selectedId) : null);
-
-  const handleAddIngredient = (e) => {
-    e.preventDefault();
-    if (!selectedId || !ingQty) return;
-
-    if (activeTab === 'menu') {
-      const updated = recipes.map(r => {
-        if (r.id !== selectedId) return r;
-        let newIng = {};
-        if (ingKind === 'raw') {
-          const invItem = components.find(i => i.id === parseInt(ingId) || i.id === ingId);
-          if (!invItem) return r;
-          newIng = { kind: 'raw', name: invItem.name, qty: parseFloat(ingQty), unit: invItem.unit || invItem.batchUnit };
-        } else {
-          const subItem = components.find(s => s.id === parseInt(ingId) || s.id === ingId);
-          if (!subItem) return r;
-          newIng = { kind: 'sub', id: subItem.id, name: subItem.name, qty: parseFloat(ingQty), unit: subItem.yieldUnit || subItem.batchUnit };
-        }
-        return { ...r, ingredients: [...(r.ingredients || []), newIng] };
-      });
-      onUpdateRecipes(updated);
-    } else {
-      const updated = components.map(s => {
-        if (s.id !== selectedId) return s;
-        const invItem = components.find(i => i.id === parseInt(ingId) || i.id === ingId);
-        if (!invItem) return s;
-        const newIng = { name: invItem.name, qty: parseFloat(ingQty), unit: invItem.unit || invItem.batchUnit };
-        return { ...s, ingredients: [...(s.ingredients || []), newIng] };
-      });
-      onUpdateComponents(updated);
-    }
-
-    setIngId('');
-    setIngQty('');
-  };
-
-  const handleRemoveIngredient = (index) => {
-    if (activeTab === 'menu') {
-      const updated = recipes.map(r => {
-        if (r.id !== selectedId) return r;
-        const nIngs = [...(r.ingredients || [])];
-        nIngs.splice(index, 1);
-        return { ...r, ingredients: nIngs };
-      });
-      onUpdateRecipes(updated);
-    } else {
-      const updated = components.map(s => {
-        if (s.id !== selectedId) return s;
-        const nIngs = [...(s.ingredients || [])];
-        nIngs.splice(index, 1);
-        return { ...s, ingredients: nIngs };
-      });
-      onUpdateComponents(updated);
-    }
-  };
-
-  const cost = currentRecipe ? (activeTab === 'menu' ? computeRecipeCost(currentRecipe) : computeSubRecipeCostPerUnit(currentRecipe) * (currentRecipe.yieldQty || currentRecipe.batchYield || 1)) : 0;
-  const foodCostPercent = (currentRecipe && activeTab === 'menu' && currentRecipe.sellPrice) ? (cost / currentRecipe.sellPrice) * 100 : 0;
-
   return (
-    <div style={{ padding: '10px 0' }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 24, margin: '0 0 4px 0', color: '#0e0e0c' }}>Recipes & Costing Ledger</h2>
-        <p style={{ margin: 0, fontSize: 13, color: '#5a4f40' }}>Map menu builds against live inventory metrics & batch formulas</p>
-      </div>
-
-      {/* Internal Sub Navigation tabs */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
-        <button 
-          onClick={() => { setActiveTab('menu'); setSelectedId(null); }} 
-          style={{ padding: '10px 16px', background: activeTab === 'menu' ? '#1a1a18' : '#efe6d3', color: activeTab === 'menu' ? '#fff' : '#0e0e0c', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
-        >
-          Menu Item Recipes
-        </button>
-        <button 
-          onClick={() => { setActiveTab('sub'); setSelectedId(null); }} 
-          style={{ padding: '10px 16px', background: activeTab === 'sub' ? '#1a1a18' : '#efe6d3', color: activeTab === 'sub' ? '#fff' : '#0e0e0c', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
-        >
-          Sub-Recipes & Batches
-        </button>
-      </div>
-
-      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-        {/* Left Side: Directory List */}
-        <div style={{ background: '#f7f1e3', border: '1px solid #1a1a18', borderRadius: 4, flex: 1, minWidth: 280, padding: 0 }}>
-          <div style={{ padding: 16, borderBottom: `1px solid #1a1a18`, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <input 
-              type="text" 
-              placeholder="Search formulation catalog..." 
-              value={searchTerm} 
-              onChange={e => setSearchTerm(e.target.value)} 
-              style={{ padding: '8px 12px', border: '1px solid #1a1a18', background: '#fff', borderRadius: 4, flex: 1 }} 
-            />
-            {activeTab === 'menu' && (
-              <select 
-                value={filterCategory} 
-                onChange={e => setFilterCategory(e.target.value)} 
-                style={{ padding: '8px', border: '1px solid #1a1a18', background: '#fff', borderRadius: 4 }}
-              >
-                <option value="All">All Categories</option>
-                <option value="Starter">Starters</option>
-                <option value="Main">Mains</option>
-                <option value="Dessert">Desserts</option>
-              </select>
-            )}
-          </div>
-
-          <div style={{ maxHeight: '500px', overflowY: 'auto' }}>
-            {activeTab === 'menu' ? (
-              filteredRecipes.map(r => {
-                const cCost = computeRecipeCost(r);
-                const margin = r.sellPrice ? ((r.sellPrice - cCost) / r.sellPrice) * 100 : 0;
-                return (
-                  <div 
-                    key={r.id} 
-                    onClick={() => setSelectedId(r.id)}
-                    style={{
-                      padding: '14px 16px',
-                      borderBottom: `1px solid #1a1a18`,
-                      background: selectedId === r.id ? '#f5e9c8' : 'transparent',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center'
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600, color: '#0e0e0c' }}>{r.name}</div>
-                      <div style={{ fontSize: 11, color: '#5a4f40' }}>{r.category} • {r.ingredients?.length || 0} items</div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>{currencySymbol}{r.sellPrice}</div>
-                      <div style={{ fontSize: 11, color: margin < 65 ? '#b8362a' : '#4a6b3a', fontWeight: 'bold' }}>
-                        {margin.toFixed(0)}% Margin
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              filteredSubs.map(s => {
-                const cCost = computeSubRecipeCostPerUnit(s);
-                return (
-                  <div 
-                    key={s.id} 
-                    onClick={() => setSelectedId(s.id)}
-                    style={{
-                      padding: '14px 16px',
-                      borderBottom: `1px solid #1a1a18`,
-                      background: selectedId === s.id ? '#f5e9c8' : 'transparent',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center'
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600, color: '#0e0e0c' }}>{s.name}</div>
-                      <div style={{ fontSize: 11, color: '#5a4f40' }}>Yields {s.yieldQty || s.batchYield || 1} {s.yieldUnit || s.batchUnit}</div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
-                        {currencySymbol}{cCost.toFixed(2)} / {s.yieldUnit || s.batchUnit}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
+    <div style={{ color: '#0e0e0c', minHeight: '80vh' }}>
+      {/* HEADER SECTION */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16, marginBottom: 24 }}>
+        <div>
+          <h2 style={{ fontSize: 24, margin: 0, fontFamily: "'serif', Georgia", fontWeight: '800', color: '#0e0e0c' }}>Recipes & Yield Matrix</h2>
+          <p style={{ margin: '4px 0 0 0', color: C.inkFade, fontSize: 13 }}>
+            Gross Profit margin engineering matrix. Audit menu items, manage batch yields, and calculate plate cost efficiencies.
+          </p>
         </div>
+      </div>
 
-        {/* Right Side: Formula breakdown */}
-        <div style={{ flex: 2, minWidth: 320, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {currentRecipe ? (
-            <>
-              {/* Financial Summary */}
-              <div style={{ background: '#efe6d3', border: '1px solid #1a1a18', borderRadius: 4, padding: 16 }}>
-                <div style={{ fontSize: 20, fontFamily: "'Bitter', serif", fontWeight: 700, marginBottom: 12 }}>
-                  {currentRecipe.name}
-                </div>
-                
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-                  <div style={{ background: '#f7f1e3', padding: 12, border: `1px solid #1a1a18` }}>
-                    <div style={{ fontSize: 10, color: '#5a4f40', textTransform: 'uppercase' }}>
-                      Total Cost
-                    </div>
-                    <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: '#0e0e0c' }}>
-                      {currencySymbol}{cost.toFixed(2)}
-                    </div>
-                  </div>
+      {/* SUB-TAB NAVIGATOR */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+        <button
+          onClick={() => { setActiveSubTab('menu_items'); setSelectedComponent(null); }}
+          style={{
+            background: activeSubTab === 'menu_items' ? '#121210' : 'transparent',
+            color: activeSubTab === 'menu_items' ? '#fff' : C.inkSoft,
+            border: `1px solid ${C.inkRule}`,
+            padding: '8px 16px',
+            fontWeight: '700',
+            fontSize: '12px',
+            cursor: 'pointer',
+            borderRadius: '4px'
+          }}
+        >
+          Menu Items ({recipes.length})
+        </button>
+        <button
+          onClick={() => { setActiveSubTab('sub_batches'); setSelectedRecipe(null); }}
+          style={{
+            background: activeSubTab === 'sub_batches' ? '#121210' : 'transparent',
+            color: activeSubTab === 'sub_batches' ? '#fff' : C.inkSoft,
+            border: `1px solid ${C.inkRule}`,
+            padding: '8px 16px',
+            fontWeight: '700',
+            fontSize: '12px',
+            cursor: 'pointer',
+            borderRadius: '4px'
+          }}
+        >
+          Sub-Batches & Components ({components.length})
+        </button>
+      </div>
 
-                  {activeTab === 'menu' ? (
-                    <>
-                      <div style={{ background: '#f7f1e3', padding: 12, border: `1px solid #1a1a18` }}>
-                        <div style={{ fontSize: 10, color: '#5a4f40', textTransform: 'uppercase' }}>
-                          Menu Retail Price
-                        </div>
-                        <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: '#b8730a' }}>
-                          {currencySymbol}{currentRecipe.sellPrice}
-                        </div>
-                      </div>
-                      <div style={{ background: '#f7f1e3', padding: 12, border: `1px solid #1a1a18` }}>
-                        <div style={{ fontSize: 10, color: '#5a4f40', textTransform: 'uppercase' }}>
-                          Food Cost %
-                        </div>
-                        <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: foodCostPercent > 32 ? '#b8362a' : '#4a6b3a' }}>
-                          {foodCostPercent.toFixed(1)}%
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div style={{ background: '#f7f1e3', padding: 12, border: `1px solid #1a1a18` }}>
-                      <div style={{ fontSize: 10, color: '#5a4f40', textTransform: 'uppercase' }}>
-                        Unit Cost Rate
-                      </div>
-                      <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: '#2c5a82' }}>
-                        {currencySymbol}{(cost / (currentRecipe.yieldQty || currentRecipe.batchYield || 1)).toFixed(2)} / {currentRecipe.yieldUnit || currentRecipe.batchUnit}
-                      </div>
-                    </div>
-                  )}
-                </div>
+      {/* DUAL COLUMN SYSTEM LAYOUT */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 24, alignItems: 'start' }}>
+        
+        {/* LEFT COLUMN: SPEC LISTS */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {activeSubTab === 'menu_items' ? (
+            recipes.length === 0 ? (
+              <div style={{ color: C.inkFade, fontSize: 12, padding: 24, background: C.paper2, border: `1px dashed ${C.inkRule}`, borderRadius: 4, textAlign: 'center' }}>
+                No active menu items mapped. Scan recipes via the Digitizer to populate matrix.
               </div>
-
-              {/* Composition Lines Table */}
-              <div style={{ background: '#f7f1e3', border: '1px solid #1a1a18', borderRadius: 4, padding: 16 }}>
-                <div style={{ fontWeight: 700, borderBottom: `1px solid #1a1a18`, paddingBottom: 8, marginBottom: 12, fontSize: 12, color: '#5a4f40', textTransform: 'uppercase' }}>
-                  Component Breakdown
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {(currentRecipe.ingredients || []).map((ing, index) => {
-                    let calculatedCost = 0;
-                    if (ing.kind === 'sub') {
-                      const matchedSub = components.find(s => s.id === ing.id || s.name === ing.name);
-                      if (matchedSub) {
-                        calculatedCost = computeSubRecipeCostPerUnit(matchedSub) * ing.qty;
-                      }
-                    } else {
-                      calculatedCost = getRawMaterialCost(ing.name, ing.unit) * ing.qty;
-                    }
-
-                    return (
-                      <div 
-                        key={index} 
-                        style={{ 
-                          display: 'flex', 
-                          justifyContent: 'space-between', 
-                          alignItems: 'center', 
-                          padding: '8px 0', 
-                          borderBottom: `1px dashed #efe6d3` 
-                        }}
-                      >
-                        <div>
-                          <span style={{ fontWeight: 600 }}>{ing.name}</span>
-                          {ing.kind === 'sub' && <span style={{ marginLeft: 8, padding: '2px 6px', background: '#2c5a82', color: '#fff', fontSize: 9, borderRadius: 3 }}>SUB</span>}
-                          <div style={{ fontSize: 11, color: '#5a4f40' }}>
-                            {ing.qty} {ing.unit} allocated
-                          </div>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                          <span style={{ fontFamily: "'JetBrains Mono', monospace', monospace", fontWeight: 600 }}>
-                            {currencySymbol}{calculatedCost.toFixed(2)}
-                          </span>
-                          <button 
-                            onClick={() => handleRemoveIngredient(index)}
-                            style={{ background: 'transparent', border: 'none', color: '#b8362a', cursor: 'pointer', fontSize: 16 }}
-                          >
-                            ×
-                          </button>
-                        </div>
+            ) : (
+              recipes.map((recipe) => {
+                const isSelected = selectedRecipe?.id === recipe.id;
+                return (
+                  <div
+                    key={recipe.id}
+                    onClick={() => setSelectedRecipe(recipe)}
+                    style={{
+                      background: isSelected ? C.paper2 : '#121210',
+                      border: `1px solid ${isSelected ? C.accent : C.inkRule}`,
+                      borderRadius: '4px',
+                      padding: '14px 16px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: '700', color: isSelected ? '#000' : '#fff' }}>{recipe.name}</div>
+                      <div style={{ fontSize: 11, color: isSelected ? C.inkSoft : C.inkFade, marginTop: 4 }}>
+                        {recipe.category || 'Line Item'} • Target Yield: {recipe.yield || 'Standard Portion'}
                       </div>
-                    );
-                  })}
-
-                  {(!currentRecipe.ingredients || currentRecipe.ingredients.length === 0) && (
-                    <div style={{ padding: '20px 0', color: '#5a4f40', fontStyle: 'italic', fontSize: 13 }}>
-                      No composition lines specified for this item yet.
                     </div>
-                  )}
-                </div>
-
-                {/* Inline Adder Form */}
-                <form onSubmit={handleAddIngredient} style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid #1a1a18`, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                  {activeTab === 'menu' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <span style={{ fontSize: 10, color: '#5a4f40' }}>Type</span>
-                      <select value={ingKind} onChange={e => { setIngKind(e.target.value); setIngId(''); }} style={{ padding: '8px', border: '1px solid #1a1a18', background: '#fff', borderRadius: 4 }}>
-                        <option value="raw">Raw Inventory</option>
-                        <option value="sub">Sub-Recipe Batch</option>
-                      </select>
+                    <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>
+                      <span style={{ fontSize: 13, fontWeight: '700', color: isSelected ? '#000' : C.accent }}>
+                        {currencySymbol}{(recipe.sellPrice || 0).toFixed(2)}
+                      </span>
                     </div>
-                  )}
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 2, minWidth: 150 }}>
-                    <span style={{ fontSize: 10, color: '#5a4f40' }}>Select Item</span>
-                    <select value={ingId} onChange={e => setIngId(e.target.value)} style={{ padding: '8px', border: '1px solid #1a1a18', background: '#fff', borderRadius: 4, width: '100%' }} required>
-                      <option value="">-- Choose From Catalog --</option>
-                      {components?.map(i => (
-                        <option key={i.id} value={i.id}>{i.name} ({currencySymbol}{(i.costPrice || i.cost || 0)}/{i.unit || i.batchUnit})</option>
-                      ))}
-                    </select>
                   </div>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
-                    <span style={{ fontSize: 10, color: '#5a4f40' }}>Quantity Weight</span>
-                    <input 
-                      type="number" 
-                      step="any" 
-                      placeholder="0.00" 
-                      value={ingQty} 
-                      onChange={e => setIngQty(e.target.value)} 
-                      style={{ padding: '8px', border: '1px solid #1a1a18', background: '#fff', borderRadius: 4, width: '100%' }} 
-                      required 
-                    />
-                  </div>
-
-                  <button type="submit" style={{ padding: '8px 16px', background: '#b8730a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 700 }}>+ Commit</button>
-                </form>
-              </div>
-            </>
+                );
+              })
+            )
           ) : (
-            <div style={{ background: '#f7f1e3', border: '1px solid #1a1a18', borderRadius: 4, textAlign: 'center', padding: '60px 20px', color: '#5a4f40' }}>
-              <div style={{ fontSize: 32, marginBottom: 12 }}>📖</div>
-              <div style={{ fontFamily: "'Bitter', serif", fontSize: 16, fontWeight: 700, color: '#0e0e0c', marginBottom: 4 }}>
-                No Formulations Target Loaded
+            components.length === 0 ? (
+              <div style={{ color: C.inkFade, fontSize: 12, padding: 24, background: C.paper2, border: `1px dashed ${C.inkRule}`, borderRadius: 4, textAlign: 'center' }}>
+                No component preparation items discovered.
               </div>
-              <div style={{ fontSize: 12 }}>
-                Select a menu item layout or sub-recipe formula breakdown from the index to verify metrics.
-              </div>
-            </div>
+            ) : (
+              components.map((comp) => {
+                const isSelected = selectedComponent?.id === comp.id;
+                return (
+                  <div
+                    key={comp.id}
+                    onClick={() => setSelectedComponent(comp)}
+                    style={{
+                      background: isSelected ? C.paper2 : '#121210',
+                      border: `1px solid ${isSelected ? C.accent : C.inkRule}`,
+                      borderRadius: '4px',
+                      padding: '14px 16px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: '700', color: isSelected ? '#000' : '#fff' }}>{comp.name}</div>
+                      <div style={{ fontSize: 11, color: isSelected ? C.inkSoft : C.inkFade, marginTop: 4 }}>
+                        Batch Yield: {comp.batchYield || '1'} {comp.batchUnit || 'units'} • Hold Life: {comp.holdLife || 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )
           )}
         </div>
+
+        {/* RIGHT COLUMN: CORE INSPECTOR */}
+        <div>
+          <div style={{ background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, padding: 16, minHeight: 400 }}>
+            {selectedRecipe ? (
+              <div>
+                <div style={{ borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 10, marginBottom: 14 }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+                    Menu Item Architecture Blueprint
+                  </div>
+                  <h3 style={{ fontSize: 18, margin: '4px 0 0 0', fontFamily: "'serif', Georgia", fontWeight: '800' }}>
+                    {selectedRecipe.name}
+                  </h3>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, background: 'rgba(0,0,0,0.03)', padding: 10, borderRadius: 4 }}>
+                    <div>
+                      <div style={{ fontSize: 9, color: C.inkFade, textTransform: 'uppercase', fontWeight: 700 }}>Menu Selling Price</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: C.ink, fontFamily: 'monospace' }}>
+                        {currencySymbol}{(selectedRecipe.sellPrice || 0).toFixed(2)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 9, color: C.inkFade, textTransform: 'uppercase', fontWeight: 700 }}>Categorization Tag</div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: C.ink, marginTop: 2 }}>
+                        {selectedRecipe.category || 'Mains'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase', marginBottom: 6 }}>
+                      Ingredient Framework Breakdown
+                    </div>
+                    <div style={{ border: `1px solid ${C.inkRule}`, borderRadius: 4, background: '#161614', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {selectedRecipe.ingredient1 ? (
+                        <div style={{ fontSize: 12, color: '#fff' }}>
+                          <span style={{ color: C.accent, marginRight: 6 }}>•</span> {selectedRecipe.ingredient1}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 11, color: C.inkFade, fontStyle: 'italic' }}>No detailed material components registered.</div>
+                      )}
+                      {selectedRecipe.ingredient2 && (
+                        <div style={{ fontSize: 12, color: '#fff', borderTop: '1px solid #222', paddingTop: 6 }}>
+                          <span style={{ color: C.accent, marginRight: 6 }}>•</span> {selectedRecipe.ingredient2}
+                        </div>
+                      )}
+                      {selectedRecipe.ingredient3 && (
+                        <div style={{ fontSize: 12, color: '#fff', borderTop: '1px solid #222', paddingTop: 6 }}>
+                          <span style={{ color: C.accent, marginRight: 6 }}>•</span> {selectedRecipe.ingredient3}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : selectedComponent ? (
+              <div>
+                <div style={{ borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 10, marginBottom: 14 }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+                    Sub-Batch Ledger Inspector
+                  </div>
+                  <h3 style={{ fontSize: 18, margin: '4px 0 0 0', fontFamily: "'serif', Georgia", fontWeight: '800' }}>
+                    {selectedComponent.name}
+                  </h3>
+                </div>
+                <div style={{ fontSize: 13, color: C.inkSoft }}>
+                  <p><strong>Stable Roster Life:</strong> {selectedComponent.holdLife || 'No restrictions logged'}</p>
+                  <p><strong>Baseline Batch Yield:</strong> {selectedComponent.batchYield} {selectedComponent.batchUnit}</p>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 260, color: C.inkFade }}>
+                <div style={{ fontSize: 24, marginBottom: 6 }}>📖</div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>Select any target menu item or sub-batch line to audit ledger dimensions.</div>
+              </div>
+            )}
+          </div>
+        </div>
+
       </div>
     </div>
   );
 }
-
-
 
 function RecipeDetail({ recipe, components, settings, onClose, onUpdateRecipes, recipes }) {
   const { foodCost, profit, gp } = recipeCosting(recipe, components);
@@ -2817,33 +2732,8 @@ function ScanScreen({ recipes = [], onUpdateRecipes, settings }) {
     <div style={S.container}>
       {/* HEADER ROW WITH ALIGNED BIGGER BUTTON */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        <div style={{ flex: 1, marginRight: 24 }}>
-          <ScreenHeader title="AI Recipe Digitizer" sub="Instantly extract formulation lists directly into your template database structures" />
-        </div>
         
-        {!file && !showLaptopCamera && (
-          <button
-            onClick={() => !isExtracting && setShowOptions(true)}
-            disabled={isExtracting}
-            style={{
-              background: '#ffffff',
-              color: C.ink,
-              border: `1px solid ${C.paper2}`,
-              borderRadius: '4px',
-              padding: '12px 28px', // Increased padding to make it bigger
-              fontSize: '14px', // Increased text readability size
-              fontWeight: '700',
-              fontFamily: "'JetBrains Mono', monospace",
-              cursor: isExtracting ? 'not-allowed' : 'pointer',
-              whiteSpace: 'nowrap',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-              marginTop: '4px',
-              transition: 'all 0.2s ease'
-            }}
-          >
-            + Scan Invoice
-          </button>
-        )}
+       
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -3226,3 +3116,4 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
     </div>
   );
 }
+
