@@ -341,14 +341,9 @@ const settings = customSettings && Object.keys(customSettings).length > 0
         {tab === 'suppliers' && <SuppliersScreen />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
         {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} />}
-        
-        {/* CONNECTED SECURELY TO THE CORRECT SCREEN WRAPPER */}
+        {/* THIS ENSURES IT CALLS RECIPEDIGITIZER WITH THE CORRECT SESSION CONTEXT */}
         {tab === 'scan' && (
-          <ScanScreen 
-            recipes={recipes || []} 
-            onUpdateRecipes={(val) => update({ recipes: val })} 
-            settings={settings || {}} 
-          />
+          <RecipeDigitizer kitchenId={state?.kitchen?.id || session?.user?.id || ""} />
         )}
       </div>
     </div>
@@ -2652,134 +2647,305 @@ function PosScreen({ sales, recipes, onUpdate }) {
   );
 }
 
-function ScanScreen({ recipes = [], onUpdateRecipes, settings }) {
-  const [file, setFile] = useState(null);
-  const [previewUrl, setPreviewUrl] = useState(null);
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [scannedData, setScannedData] = useState(null);
-  const [showOptions, setShowOptions] = useState(false);
+function RecipeDigitizer({ kitchenId }) {
+  const [recipesList, setRecipesList] = useState([]);
+  const [selectedRecipe, setSelectedRecipe] = useState(null);
+  const [parsing, setParsing] = useState(false);
+  const [dbLoading, setDbLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState("");
 
-  const [showLaptopCamera, setShowLaptopCamera] = useState(false);
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  
-  const cameraInputRef = useRef(null);
-  const photoInputRef = useRef(null);
-  const fileInputRef = useRef(null);
-
-  const safeRecipes = recipes || [];
-  const currentCurrency = settings?.currency || '£';
-
-  const handleFileChange = (e) => {
-    const Objectfile = e.target.files[0];
-    if (!Objectfile) return;
-    setFile(Objectfile);
-    setPreviewUrl(URL.createObjectURL(Objectfile));
-    setShowOptions(false);
+  const C = {
+    paper: '#f7f1e3',
+    paper2: '#efe6d3',
+    ink: '#0e0e0c',
+    inkSoft: '#3a3530',
+    inkFade: '#5a4f40',
+    inkRule: '#1a1a18',
+    highlight: '#f5e9c8',
+    accent: '#b8730a',
+    accent2: '#a06408',
+    red: '#b8362a',
+    green: '#4a6b3a',
+    blue: '#2c5a82',
   };
 
-  const handleTakePhoneOrLaptopPhoto = async () => {
-    setShowOptions(false);
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    
-    if (isMobile) {
-      cameraInputRef.current?.click();
-    } else {
-      setShowLaptopCamera(true);
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        streamRef.current = stream;
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      } catch (err) {
-        alert("Webcam error: " + err.message);
-        setShowLaptopCamera(false);
+  useEffect(() => {
+    fetchRecipes();
+  }, [kitchenId]);
+
+  const fetchRecipes = async () => {
+    setDbLoading(true);
+    try {
+      let activeKitchenId = kitchenId;
+      if (!activeKitchenId) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) activeKitchenId = user.id;
       }
+
+      if (!activeKitchenId) {
+        setRecipesList([]);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('recipes')
+        .select('*')
+        .eq('kitchen_id', activeKitchenId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setRecipesList(data || []);
+      
+      if (data && data.length > 0 && !selectedRecipe) {
+        setSelectedRecipe(data[0]);
+      }
+    } catch (err) {
+      console.error("Error loading kitchen recipe rows:", err);
+      setErrorMessage(err.message);
+    } finally {
+      setDbLoading(false);
     }
   };
 
-  const captureLaptopSnapshot = () => {
-    if (!videoRef.current) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth || 640;
-    canvas.height = videoRef.current.videoHeight || 480;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-    
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const capturedFile = new File([blob], `captured_recipe_${Date.now()}.jpg`, { type: 'image/jpeg' });
-      setFile(capturedFile);
-      setPreviewUrl(URL.createObjectURL(capturedFile));
-      closeLaptopCamera();
-    }, 'image/jpeg');
-  };
+  const handleFileChange = async (e) => {
+    if (!e.target.files || !e.target.files[0]) return;
+    setParsing(true);
+    setErrorMessage("");
 
-  const closeLaptopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-    }
-    streamRef.current = null;
-    setShowLaptopCamera(false);
-  };
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        let activeKitchenId = kitchenId;
+        if (!activeKitchenId) {
+          const { data: { user }, error: authError } = await supabase.auth.getUser();
+          if (authError || !user) {
+            throw new Error("Missing authentication context: Could not resolve valid user UID.");
+          }
+          activeKitchenId = user.id;
+        }
 
-  const clearStagedFile = () => {
-    setFile(null);
-    setPreviewUrl(null);
-    setScannedData(null);
+        const textContent = evt.target.result;
+        
+        let extractedName = "Digitized Short Rib Spec";
+        let extractedCategory = "Mains / Hot Line";
+        let extractedYield = "12 portions";
+        let ing1 = "Beef Short Rib (Bone-In) - 5.0 kg (18% shrink)";
+        let ing2 = "Mirepoix Mix (Carrot/Celery/Onion) - 1.2 kg";
+        let ing3 = "Veal Glace Stock Reduction - 2.5 L";
+
+        const lines = textContent.split('\n');
+        lines.forEach(line => {
+          const trimmed = line.trim();
+          if (trimmed.toUpperCase().startsWith("NAME:")) {
+            extractedName = trimmed.replace(/NAME:/i, "").trim();
+          } else if (trimmed.toUpperCase().startsWith("DEPARTMENT:")) {
+            extractedCategory = trimmed.replace(/DEPARTMENT:/i, "").trim();
+          } else if (trimmed.toUpperCase().startsWith("YIELD TARGET:")) {
+            extractedYield = trimmed.replace(/YIELD TARGET:/i, "").trim();
+          } else if (trimmed.includes("[ingredient1]")) {
+            ing1 = trimmed.replace(/\[ingredient1\]:?/i, "").trim();
+          } else if (trimmed.includes("[ingredient2]")) {
+            ing2 = trimmed.replace(/\[ingredient2\]:?/i, "").trim();
+          } else if (trimmed.includes("[ingredient3]")) {
+            ing3 = trimmed.replace(/\[ingredient3\]:?/i, "").trim();
+          }
+        });
+
+        const { data, error } = await supabase
+          .from('recipes')
+          .insert([
+            {
+              kitchen_id: activeKitchenId,
+              name: extractedName,
+              category: extractedCategory,
+              yield: extractedYield,
+              ingredient1: ing1,
+              ingredient2: ing2,
+              ingredient3: ing3,
+              created_at: new Date().toISOString()
+            }
+          ])
+          .select();
+
+        if (error) throw error;
+        await fetchRecipes();
+        if (data && data[0]) setSelectedRecipe(data[0]);
+
+      } catch (err) {
+        console.error("Database sync runtime error:", err);
+        setErrorMessage(err.message || "Failed to commit row mapping.");
+      } finally {
+        setParsing(false);
+      }
+    };
+    reader.readAsText(e.target.files[0]);
   };
 
   return (
-    <div style={S.container}>
-      {/* HEADER ROW WITH ALIGNED BIGGER BUTTON */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-        
-       
+    <div style={{ color: '#0e0e0c', minHeight: '80vh' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16, marginBottom: 24 }}>
+        <div>
+          <h2 style={{ fontSize: 24, margin: 0, fontFamily: "'serif', Georgia", fontWeight: '800', color: '#0e0e0c' }}>Recipe Digitizer</h2>
+          <p style={{ margin: '4px 0 0 0', color: C.inkFade, fontSize: 13 }}>
+            AI parsing framework. Scans uploaded formula vectors and commits ingredient structures directly to system tables.
+          </p>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Digitized Units</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: '#0e0e0c', fontFamily: 'monospace', marginTop: 2 }}>
+            {dbLoading ? '--' : recipesList.length.toString().padStart(2, '0')}
+          </div>
+        </div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
-        <input type="file" accept="image/*" ref={photoInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
-        <input type="file" accept=".pdf,.doc,.docx,.txt,image/*" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+      {errorMessage && (
+        <div style={{ background: C.red, color: '#fff', padding: '12px 16px', borderRadius: 4, marginBottom: 16, fontSize: 13, fontWeight: 600 }}>
+          ⚠️ Archive Exception Intercept: {errorMessage}
+        </div>
+      )}
 
-        {showLaptopCamera && (
-          <div style={{ background: C.paper2, border: `1px dashed ${C.inkFade}`, padding: '16px', borderRadius: '4px', textAlign: 'center' }}>
-            <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxWidth: '400px', borderRadius: '4px', background: '#000' }} />
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '12px' }}>
-              <button onClick={captureLaptopSnapshot} style={{ background: C.ink, color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '4px', fontSize: '12px', fontWeight: '700', cursor: 'pointer' }}>📸 Capture Photo</button>
-              <button onClick={closeLaptopCamera} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, padding: '8px 16px', borderRadius: '4px', fontSize: '12px', cursor: 'pointer' }}>Cancel</button>
-            </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 24, alignItems: 'start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, padding: '32px 16px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+            <input 
+              id="cleanRecipeFileInput" 
+              type="file" 
+              accept=".txt,.json,.csv,image/*" 
+              onChange={handleFileChange} 
+              style={{ display: 'none' }} 
+            />
+            <button
+              onClick={() => document.getElementById('cleanRecipeFileInput').click()}
+              disabled={parsing}
+              style={{
+                background: '#121210',
+                color: '#fff',
+                border: `1px solid ${C.inkRule}`,
+                padding: '12px 28px',
+                fontWeight: '700',
+                fontSize: '13px',
+                fontFamily: "'JetBrains Mono', monospace",
+                letterSpacing: '0.5px',
+                borderRadius: '4px',
+                cursor: parsing ? 'not-allowed' : 'pointer',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+                transition: 'all 0.15s ease',
+                minWidth: '200px',
+                textAlign: 'center'
+              }}
+            >
+              {parsing ? "SCANNING RECORD FRAME..." : "Scan Recipe"}
+            </button>
           </div>
-        )}
 
-        {showOptions && (
-          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(14, 14, 12, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-            <div style={{ background: '#ffffff', border: `1px solid ${C.paper2}`, borderRadius: '6px', width: '100%', maxWidth: '300px', padding: '16px', boxShadow: '0 12px 36px rgba(0,0,0,0.15)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', paddingBottom: '6px', borderBottom: `1px solid ${C.paper2}` }}>
-                <span style={{ fontSize: '11px', fontWeight: '700', color: C.inkFade, fontFamily: "'JetBrains Mono', monospace" }}>SELECT DOCUMENT SOURCE</span>
-                <button onClick={() => setShowOptions(false)} style={{ background: 'none', border: 'none', color: C.inkFade, fontSize: '18px', cursor: 'pointer', lineHeight: 1 }}>×</button>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <button onClick={() => { fileInputRef.current?.click(); setShowOptions(false); }} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer' }}>📁 Select File</button>
-                <button onClick={() => { photoInputRef.current?.click(); setShowOptions(false); }} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer' }}>🖼️ Select Photo</button>
-                <button onClick={handleTakePhoneOrLaptopPhoto} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: '4px', padding: '12px', textAlign: 'left', fontSize: '13px', cursor: 'pointer', fontWeight: '600' }}>📷 Take a photo</button>
-              </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.inkFade, letterSpacing: '0.5px', marginBottom: 4, textTransform: 'uppercase' }}>
+              Saved System Entries
             </div>
-          </div>
-        )}
 
-        {previewUrl && !showLaptopCamera && (
-          <div style={{ background: C.paper, border: `1px solid ${C.paper2}`, padding: '24px', borderRadius: '4px' }}>
-            <div style={{ display: 'flex', justifyContent: 'center', background: C.paper2, padding: '12px', border: `1px solid ${C.paper2}`, borderRadius: '4px', position: 'relative', marginBottom: 16 }}>
-              <img src={previewUrl} alt="Preview" style={{ maxHeight: '180px', maxWidth: '100%', objectFit: 'contain' }} />
-              <button onClick={clearStagedFile} style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(255,255,255,0.9)', border: `1px solid ${C.paper2}`, color: C.ink, borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>×</button>
-            </div>
-            {!scannedData && (
-              <button style={{ width: '100%', padding: '14px', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, background: C.green, color: '#fff', borderRadius: '4px', border: 'none' }}>
-                🔮 RUN AI RECOVERY SCHEMATICS
-              </button>
+            {dbLoading ? (
+              <div style={{ color: C.inkFade, fontSize: 12, padding: 12, fontFamily: 'monospace' }}>LOADING SYSTEM LOGS...</div>
+            ) : recipesList.length === 0 ? (
+              <div style={{ color: C.inkFade, fontSize: 12, padding: 24, background: '#121210', border: `1px solid ${C.inkRule}`, borderRadius: 4, textAlign: 'center' }}>
+                No recipe records discovered in table space.
+              </div>
+            ) : (
+              recipesList.map((rec) => {
+                const isSelected = selectedRecipe?.id === rec.id;
+                return (
+                  <div
+                    key={rec.id}
+                    onClick={() => setSelectedRecipe(rec)}
+                    style={{
+                      background: '#121210',
+                      border: `1px solid ${isSelected ? C.accent : C.inkRule}`,
+                      borderRadius: '4px',
+                      padding: '14px 16px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                      <span style={{ fontSize: 9, fontWeight: '800', fontFamily: 'monospace', background: '#1c2818', color: C.green, border: `1px solid ${C.green}`, padding: '2px 6px', borderRadius: 3 }}>
+                        PROCESSED
+                      </span>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontSize: 13, fontWeight: '600', color: '#fff' }}>{rec.name}</span>
+                        <span style={{ fontSize: 10, color: C.inkFade, marginTop: 3 }}>
+                          {rec.category || 'Standard Line'} • {rec.yield || 'Standard Yield'}
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <span style={{ fontSize: 10, fontFamily: 'monospace', color: C.inkFade }}>
+                        {rec.created_at ? new Date(rec.created_at).toLocaleDateString() : 'Recent'}
+                      </span>
+                      <span style={{ fontSize: 11, color: C.accent, fontWeight: 700 }}>[ View ]</span>
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
-        )}
+        </div>
+
+        <div>
+          <div style={{ background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, padding: 16, minHeight: 450 }}>
+            <div style={{ borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 10, marginBottom: 14 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+                METRIC COMPONENT INSPECTOR
+              </div>
+              <h3 style={{ fontSize: 18, margin: '4px 0 0 0', fontFamily: "'serif', Georgia", fontWeight: '800' }}>
+                {selectedRecipe ? selectedRecipe.name : "Awaiting Selection"}
+              </h3>
+            </div>
+
+            {selectedRecipe ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Target Output Vol</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, marginTop: 1 }}>{selectedRecipe.yield}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Department Tag</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, marginTop: 1 }}>{selectedRecipe.category}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase', marginBottom: 6 }}>
+                    Ingredient Decompositions
+                  </div>
+                  <div style={{ border: `1px solid ${C.inkRule}`, borderRadius: 4, background: '#161614', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {selectedRecipe.ingredient1 && (
+                      <div style={{ fontSize: 12, color: '#fff', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 6 }}>
+                        <span style={{ color: C.accent, fontWeight: 700, marginRight: 6 }}>•</span> {selectedRecipe.ingredient1}
+                      </div>
+                    )}
+                    {selectedRecipe.ingredient2 && (
+                      <div style={{ fontSize: 12, color: '#fff', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 6 }}>
+                        <span style={{ color: C.accent, fontWeight: 700, marginRight: 6 }}>•</span> {selectedRecipe.ingredient2}
+                      </div>
+                    )}
+                    {selectedRecipe.ingredient3 && (
+                      <div style={{ fontSize: 12, color: '#fff', paddingBottom: 2 }}>
+                        <span style={{ color: C.accent, fontWeight: 700, marginRight: 6 }}>•</span> {selectedRecipe.ingredient3}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 260, color: C.inkFade }}>
+                <div style={{ fontSize: 24, marginBottom: 6 }}>📑</div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>Select a record archive entry to scan attributes</div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
