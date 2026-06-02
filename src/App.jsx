@@ -333,6 +333,7 @@ const settings = customSettings && Object.keys(customSettings).length > 0
         {/* FIX: Wired invoices state array downstream so matching costs align instantly */}
 {tab === 'recipes' && (
   <RecipesScreen 
+    kitchenId={state?.kitchen?.id || session?.user?.id || ""}
     recipes={recipes || []} 
     invoices={invoices || []} 
     components={components || []} 
@@ -353,7 +354,11 @@ const settings = customSettings && Object.keys(customSettings).length > 0
         {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} />}
         {/* THIS ENSURES IT CALLS RECIPEDIGITIZER WITH THE CORRECT SESSION CONTEXT */}
         {tab === 'scan' && (
-          <RecipeDigitizer kitchenId={state?.kitchen?.id || session?.user?.id || ""} />
+          <RecipeDigitizer
+            kitchenId={state?.kitchen?.id || session?.user?.id || ""}
+            recipes={recipes || []}
+            onUpdateRecipes={(val) => update({ recipes: val })}
+          />
         )}
       </div>
     </div>
@@ -948,7 +953,7 @@ function Dashboard(props) {
     let theoreticalCostTotal = 0;
     let retailRevenueTotal = 0;
 
-    if (!sales || sales.length === 0 || !recipes) return 31.4;
+    if (!sales || sales.length === 0 || !recipes) return 0;
 
     sales.forEach(saleItem => {
       const matchedRecipe = recipes.find(r => r.id === saleItem.recipeId || r.name?.toLowerCase() === saleItem.item?.toLowerCase());
@@ -960,7 +965,7 @@ function Dashboard(props) {
       }
     });
 
-    if (retailRevenueTotal === 0) return 31.4; // Fallback design standard target point
+    if (retailRevenueTotal === 0) return 0; // No revenue logged yet — no theoretical cost to show
     return (theoreticalCostTotal / retailRevenueTotal) * 100;
   }, [sales, recipes, components]);
 
@@ -994,8 +999,8 @@ function Dashboard(props) {
           <div style={{ fontSize: isMobile ? 9 : 11, color: '#5a4f40', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px', marginBottom: 6 }}>
             {isMobile ? 'Food Cost' : 'Theoretical Cost'}
           </div>
-          <div style={{ fontSize: isMobile ? 15 : 26, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: aggregateFoodCostPercent > 35 ? '#b8362a' : '#4a6b3a' }}>
-            {aggregateFoodCostPercent.toFixed(1)}%
+          <div style={{ fontSize: isMobile ? 15 : 26, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: (!sales || sales.length === 0) ? '#5a4f40' : (aggregateFoodCostPercent > 35 ? '#b8362a' : '#4a6b3a') }}>
+            {(!sales || sales.length === 0) ? '—' : aggregateFoodCostPercent.toFixed(1) + '%'}
           </div>
         </div>
 
@@ -1077,60 +1082,64 @@ function PlannerScreen({ planner, onUpdate }) {
 // ============================================================
 // 6. RECIPES SCREEN WITH DYNAMIC INVOICE LOOKUP & GP CALCULATIONS
 // ============================================================
-export function RecipesScreen({ kitchenId, recipes = [], components = [], invoices = [], onUpdateRecipes }) {
+export function RecipesScreen({ kitchenId, recipes = [], components = [], invoices = [], onUpdateRecipes, settings = {} }) {
   const authContext = typeof useAuth === 'function' ? useAuth() : { user: { id: 'mock-chef-id' } };
   const user = authContext?.user;
   const supabaseClient = typeof supabase !== 'undefined' ? supabase : (window.supabase || null);
 
   const [localRecipes, setLocalRecipes] = useState([]);
   const [localInvoices, setLocalInvoices] = useState([]);
+  const [localInvoiceLines, setLocalInvoiceLines] = useState([]);
   const [selectedRecipeName, setSelectedRecipeName] = useState("");
   const [editSellPrice, setEditSellPrice] = useState("");
   const [updating, setUpdating] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const activeKitchenId = kitchenId || user?.id;
+  const currencySymbol = settings?.currency || '£';
 
-  // Sync internal state with props or reload directly via Supabase client fallback
-  useEffect(() => {
-    if (recipes && recipes.length > 0) {
-      setLocalRecipes(recipes);
-      if (!selectedRecipeName) setSelectedRecipeName(recipes[0].name);
-    } else {
-      fetchRecipesAndInvoices();
-    }
-  }, [recipes, activeKitchenId]);
-
-  useEffect(() => {
-    if (invoices && invoices.length > 0) {
-      setLocalInvoices(invoices);
-    } else {
-      fetchRecipesAndInvoices();
-    }
-  }, [invoices]);
-
+  // Load recipes, invoices and invoice lines straight from the database.
+  // The DB rows are the source of truth and always include ingredient_item;
+  // the app-state prop can arrive in a reduced shape that drops it.
   const fetchRecipesAndInvoices = async () => {
     if (!activeKitchenId || !supabaseClient) return;
     try {
       const { data: recData } = await supabaseClient
         .from('recipes')
         .select('*')
-        .eq('kitchen_id', activeKitchenId);
-      
+        .eq('kitchen_id', activeKitchenId)
+        .order('created_at', { ascending: true });
+
       const { data: invData } = await supabaseClient
         .from('invoices')
         .select('*')
         .eq('kitchen_id', activeKitchenId);
 
-      if (recData && recData.length > 0) {
-        setLocalRecipes(recData);
-        if (!selectedRecipeName) setSelectedRecipeName(recData[0].name);
-      }
+      const { data: lineData } = await supabaseClient
+        .from('invoice_lines')
+        .select('*')
+        .eq('kitchen_id', activeKitchenId);
+
+      // Prefer DB rows; fall back to the prop only if the table is empty
+      const recipeRows = (recData && recData.length > 0) ? recData : (recipes || []);
+      setLocalRecipes(recipeRows);
+
+      const names = Array.from(new Set(recipeRows.map(r => r.name).filter(Boolean)));
+      setSelectedRecipeName(prev => (prev && names.includes(prev)) ? prev : (names[0] || ""));
+
       if (invData) setLocalInvoices(invData);
+      if (lineData) setLocalInvoiceLines(lineData);
     } catch (err) {
-      console.error("Error matching cost ledger indices:", err);
+      console.error("Error loading recipes/invoices:", err);
     }
   };
+
+  useEffect(() => {
+    fetchRecipesAndInvoices();
+    const onDbUpdate = () => fetchRecipesAndInvoices();
+    window.addEventListener('mise-db-update', onDbUpdate);
+    return () => window.removeEventListener('mise-db-update', onDbUpdate);
+  }, [activeKitchenId]);
 
   // Group unique distinct recipes
   const uniqueRecipeNames = useMemo(() => {
@@ -1139,47 +1148,123 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
     return Array.from(names);
   }, [localRecipes]);
 
-  // Aggregate matrix rows matching selection
+  // Aggregate matrix rows matching selection.
+  // If duplicate saves exist, keep only rows that actually carry an ingredient,
+  // so empty placeholder rows don't clutter or zero-out the costing.
   const activeRecipeRows = useMemo(() => {
-    return localRecipes.filter(r => r.name === selectedRecipeName);
+    const all = localRecipes.filter(r => r.name === selectedRecipeName);
+    const withIngredients = all.filter(r => (r.ingredient_item || "").trim());
+    return withIngredients.length > 0 ? withIngredients : all;
   }, [localRecipes, selectedRecipeName]);
+
+  // The configured sell price (use the highest non-zero value across the group)
+  const groupSellPrice = useMemo(() => {
+    const prices = activeRecipeRows
+      .map(r => parseFloat(r.sell_price || 0) || 0)
+      .filter(p => p > 0);
+    return prices.length > 0 ? Math.max(...prices) : 0;
+  }, [activeRecipeRows]);
 
   // Handle active value sync defaults
   useEffect(() => {
     if (activeRecipeRows.length > 0) {
-      setEditSellPrice(activeRecipeRows[0].sell_price || "0.00");
+      setEditSellPrice(groupSellPrice ? String(groupSellPrice) : "0.00");
     }
-  }, [activeRecipeRows, selectedRecipeName]);
+  }, [activeRecipeRows, selectedRecipeName, groupSellPrice]);
 
   // --- MISE COMPLIANT RELATIONAL ENGINE ---
+  // Convert a quantity from one unit to another within the same family
+  // (mass: g/kg, volume: ml/l, count: ea). Returns null if not convertible.
+  const UNIT_FACTORS = {
+    g: { family: 'mass', toBase: 1 },
+    kg: { family: 'mass', toBase: 1000 },
+    ml: { family: 'volume', toBase: 1 },
+    l: { family: 'volume', toBase: 1000 },
+    ea: { family: 'count', toBase: 1 },
+    each: { family: 'count', toBase: 1 },
+    pcs: { family: 'count', toBase: 1 },
+    unit: { family: 'count', toBase: 1 },
+  };
+
+  const parseQtyUnit = (text) => {
+    const t = (text || "").toLowerCase();
+    const numMatch = t.match(/([0-9]+(?:\.[0-9]+)?)/);
+    const qty = numMatch ? parseFloat(numMatch[1]) : null;
+    const unitMatch = t.match(/\b(kg|g|ml|l|ea|each|pcs|unit)\b/);
+    const unit = unitMatch ? unitMatch[1] : null;
+    return { qty, unit };
+  };
+
+  const convertQty = (qty, fromUnit, toUnit) => {
+    const f = UNIT_FACTORS[fromUnit];
+    const t = UNIT_FACTORS[toUnit];
+    if (!f || !t || f.family !== t.family) return null;
+    return (qty * f.toBase) / t.toBase;
+  };
+
   const evaluatedCostingData = useMemo(() => {
     let combinedRecipeCost = 0;
 
     const items = activeRecipeRows.map((row) => {
       const ingredientText = (row.ingredient_item || "").toLowerCase().trim();
-      
-      // Look for string inclusion intersection overlaps inside processed Invoices
-      const matchedInvoiceItem = localInvoices.find(inv => {
-        const invoiceItemName = (inv.item_name || "").toLowerCase().trim();
-        return ingredientText.includes(invoiceItemName) || invoiceItemName.includes(ingredientText);
-      });
 
-      // Compute single base unit multiplier breakdown
-      const calculatedUnitCost = matchedInvoiceItem ? parseFloat(matchedInvoiceItem.total_price || 0) / Math.max(1, parseFloat(matchedInvoiceItem.quantity || 1)) : 0;
-      
-      // Look for a raw quantity integer/decimal pattern within the text block line (e.g., "5.0 kg" or "2 packs")
-      const numericalAmountMatch = (row.ingredient_item || "").match(/([0-9.]+)/);
-      const computedScaleMultiplier = numericalAmountMatch ? parseFloat(numericalAmountMatch[1]) : 1;
-      
-      const lineCostTotal = calculatedUnitCost * computedScaleMultiplier;
+      // Find every invoice line whose name matches this ingredient...
+      const matchCandidates = localInvoiceLines.filter((line) => {
+        const lineName = (line.name || "").toLowerCase().trim();
+        if (!lineName || !ingredientText) return false;
+        return ingredientText.includes(lineName) || lineName.includes(ingredientText);
+      });
+      // ...then prefer one that actually carries a price (ignores stale £0 duplicates).
+      const pricedCandidate = matchCandidates.find((line) =>
+        (parseFloat(line.price_per_unit || 0) || 0) > 0 ||
+        (parseFloat(line.line_total || 0) || 0) > 0
+      );
+      const matchedLine = pricedCandidate || matchCandidates[0] || null;
+
+      const matchedQty = matchedLine ? parseFloat(matchedLine.qty || 1) || 1 : 1;
+      let unitPrice = matchedLine ? parseFloat(matchedLine.price_per_unit || 0) || 0 : 0;
+      const matchedLineTotal = matchedLine ? parseFloat(matchedLine.line_total || 0) || 0 : 0;
+      // If only the line total was captured, back out the per-unit price
+      if (unitPrice === 0 && matchedLineTotal > 0 && matchedQty > 0) {
+        unitPrice = matchedLineTotal / matchedQty;
+      }
+      const invUnit = matchedLine ? (matchedLine.unit || "").toLowerCase().trim() : "";
+
+      // Figure out the recipe's quantity and unit, then convert to the invoice's unit
+      const recipe = parseQtyUnit(row.ingredient_item);
+      let lineCostTotal = 0;
+      let costNote = "";
+
+      if (matchedLine) {
+        const recipeConvertible = recipe.qty != null && recipe.unit && UNIT_FACTORS[recipe.unit];
+        const invFamily = UNIT_FACTORS[invUnit] ? UNIT_FACTORS[invUnit].family : null;
+
+        if (recipeConvertible && invFamily) {
+          const converted = convertQty(recipe.qty, recipe.unit, invUnit);
+          if (converted != null) {
+            lineCostTotal = converted * unitPrice;            // unit-aware (accurate)
+          } else {
+            lineCostTotal = 0;
+            costNote = "can't auto-cost — different unit types";
+          }
+        } else if (invFamily === 'count') {
+          lineCostTotal = (recipe.qty != null ? recipe.qty : 1) * unitPrice; // e.g. eggs
+        } else {
+          // recipe unit can't be converted to the invoice's bulk unit (e.g. tsp vs kg)
+          lineCostTotal = 0;
+          costNote = "needs manual cost — unit mismatch";
+        }
+      }
+
       combinedRecipeCost += lineCostTotal;
 
       return {
         rawText: row.ingredient_item,
         id: row.id,
-        isMatched: !!matchedInvoiceItem,
-        matchedName: matchedInvoiceItem ? matchedInvoiceItem.item_name : "No Invoice Link Detected",
-        unitCost: calculatedUnitCost,
+        isMatched: !!matchedLine,
+        matchedName: matchedLine ? matchedLine.name : "No invoice link detected",
+        unitCost: unitPrice,
+        costNote,
         totalItemCost: lineCostTotal
       };
     });
@@ -1197,7 +1282,7 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
       category: activeRecipeRows[0]?.category || "Main Course",
       yieldSize: activeRecipeRows[0]?.yield || "1 Portion"
     };
-  }, [activeRecipeRows, localInvoices, editSellPrice]);
+  }, [activeRecipeRows, localInvoiceLines, editSellPrice]);
 
   // Handle saving the retail adjustments to the core data row targets
   const handleUpdatePrice = async (e) => {
@@ -1286,10 +1371,14 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
                       <div style={{ color: '#fff', fontSize: 13, fontWeight: '600', fontFamily: 'monospace' }}>{item.rawText}</div>
                       <div style={{ fontSize: 11, color: item.isMatched ? paletteColors.green : '#9a8f80', marginTop: 3 }}>
                         🔗 Linked Invoice Item: <span style={{ fontWeight: 600 }}>{item.matchedName}</span>
+                        {item.isMatched && <span style={{ color: paletteColors.inkFade }}> · {currencySymbol}{item.unitCost.toFixed(2)}/unit</span>}
                       </div>
+                      {item.costNote && (
+                        <div style={{ fontSize: 10, color: paletteColors.accent, marginTop: 2 }}>⚠ {item.costNote}</div>
+                      )}
                     </div>
                     <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>
-                      <div style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>${item.totalItemCost.toFixed(2)}</div>
+                      <div style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>{currencySymbol}{item.totalItemCost.toFixed(2)}</div>
                       <div style={{ fontSize: 10, color: paletteColors.inkFade }}>Computed Subtotal</div>
                     </div>
                   </div>
@@ -1304,7 +1393,7 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
               </div>
               <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                 <div style={{ position: 'relative', flex: 1 }}>
-                  <span style={{ position: 'absolute', left: 10, top: 10, fontSize: 13, color: '#aaa' }}>$</span>
+                  <span style={{ position: 'absolute', left: 10, top: 10, fontSize: 13, color: '#aaa' }}>{currencySymbol}</span>
                   <input 
                     type="number" 
                     step="0.01" 
@@ -1337,14 +1426,14 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
             <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: paletteColors.inkFade, textTransform: 'uppercase' }}>Total Recipe Cost Accumulator</div>
               <div style={{ fontSize: 26, fontWeight: 900, color: '#fff', fontFamily: 'monospace', marginTop: 4 }}>
-                ${evaluatedCostingData.totalCost.toFixed(2)}
+                {currencySymbol}{evaluatedCostingData.totalCost.toFixed(2)}
               </div>
             </div>
 
             <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: paletteColors.inkFade, textTransform: 'uppercase' }}>Configured Target Sell Price</div>
               <div style={{ fontSize: 26, fontWeight: 900, color: paletteColors.accent, fontFamily: 'monospace', marginTop: 4 }}>
-                ${evaluatedCostingData.sellPrice.toFixed(2)}
+                {currencySymbol}{evaluatedCostingData.sellPrice.toFixed(2)}
               </div>
             </div>
 
@@ -2396,7 +2485,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
 
       const extractedSupplier = rawInvoice.supplier || rawInvoice.vendor || 'Unknown Supplier';
       const extractedTotal = parseFloat(rawInvoice.total || rawInvoice.invoice_total || 0);
-      const extractedItems = rawInvoice.items || rawInvoice.line_items || [];
+      const extractedItems = rawInvoice.items || rawInvoice.line_items || rawInvoice.lines || [];
       const extractedDate = rawInvoice.inv_date || rawInvoice.date || new Date().toISOString().split('T')[0];
       const extractedRef = 
         rawInvoice.ref || 
@@ -2421,41 +2510,48 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
 
       if (insertError) throw insertError;
 
-      // 6. Bulk write line items straight to invoice_lines matching your exact columns!
+      // 6. Bulk write line items straight to invoice_lines
+      // Strip currency symbols / commas before parsing (e.g. "£0.80" -> 0.80)
+      const toNum = (v) => {
+        if (typeof v === 'number') return isNaN(v) ? 0 : v;
+        const cleaned = String(v == null ? '' : v).replace(/[^0-9.\-]/g, '');
+        const n = parseFloat(cleaned);
+        return isNaN(n) ? 0 : n;
+      };
+      let savedLineCount = 0;
+      let lineSaveError = null;
       if (Array.isArray(extractedItems) && extractedItems.length > 0) {
-        const formattedLines = extractedItems.map((item, index) => ({
-          kitchen_id: activeKitchenId,
-          invoice_id: insertedInvoice.id,
-          position: index + 1,
-          name: item.description || item.name || 'Item',
-          qty: parseFloat(item.qty || item.quantity || 1),
-          unit: item.unit || 'ea',
-          price_per_unit: parseFloat(item.unit_price || item.price || item.rate || 0),
-          line_total: parseFloat(item.total || item.amount || 0)
-        }));
+        const formattedLines = extractedItems.map((item, index) => {
+          const qty = toNum(item.qty || item.quantity || 1) || 1;
+          let pricePerUnit = toNum(item.price_per_unit || item.unit_price || item.price || item.rate || 0);
+          let lineTotal = toNum(item.line_total || item.total || item.amount || 0);
 
-        const { error: linesError } = await supabase
+          // Fill in whichever value is missing from the other
+          if (pricePerUnit === 0 && lineTotal > 0 && qty > 0) pricePerUnit = lineTotal / qty;
+          if (lineTotal === 0 && pricePerUnit > 0) lineTotal = pricePerUnit * qty;
+
+          return {
+            kitchen_id: activeKitchenId,
+            invoice_id: insertedInvoice.id,
+            position: index + 1,
+            name: item.description || item.name || 'Item',
+            qty: qty,
+            unit: item.unit || 'ea',
+            price_per_unit: pricePerUnit,
+            line_total: lineTotal
+          };
+        });
+
+        const { data: insertedLines, error: linesError } = await supabase
           .from('invoice_lines')
-          .insert(formattedLines);
+          .insert(formattedLines)
+          .select();
 
-        if (linesError) console.error("Line items writing exception:", linesError);
-
-        // ============================================================
-        // 🌟 NEW: LIVE DATABASE INGREDIENT COST UPDATES
-        // ============================================================
-        // Loop through each item from the invoice and save its unit price to your inventory table
-        for (const item of extractedItems) {
-          const itemName = item.description || item.name;
-          const unitPrice = parseFloat(item.unit_price || item.price || item.rate || 0);
-
-          if (itemName && unitPrice > 0) {
-            // Option A: If you track costs in an 'ingredients' or 'raw_inventory' table
-            await supabase
-              .from('ingredients') // <-- Adjust to 'raw_inventory' if that's your table name
-              .update({ price_per_unit: unitPrice }) // <-- Adjust column name if needed (e.g., 'cost')
-              .eq('kitchen_id', activeKitchenId)
-              .ilike('name', `%${itemName}%`); // Case-insensitive match (e.g., 'Salmon Fillet')
-          }
+        if (linesError) {
+          console.error("Line items writing exception:", linesError);
+          lineSaveError = linesError;
+        } else {
+          savedLineCount = insertedLines ? insertedLines.length : formattedLines.length;
         }
       }
 
@@ -2470,9 +2566,19 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
       if (recipesToUpdate && onUpdateRecipes) {
         onUpdateRecipes(recipesToUpdate);
       }
-      
+
+      // Tell Recipes & Costs (and other tabs) to reload invoice line data
+      window.dispatchEvent(new Event('mise-db-update'));
+
       clearStagedFile();
-      alert("🎉 Success! Invoice saved and database ingredient prices recalculated.");
+
+      if (lineSaveError) {
+        alert("Invoice saved, but its line items could NOT be stored.\n\nDatabase said: " + (lineSaveError.message || JSON.stringify(lineSaveError)) + "\n\nWithout line items, Recipes & Costs has no prices to match.");
+      } else if (savedLineCount === 0) {
+        alert("Invoice saved, but the scan returned 0 line items, so there are no prices to match in Recipes & Costs. Try a clearer photo or a more itemised invoice.");
+      } else {
+        alert("🎉 Success! Invoice saved with " + savedLineCount + " line item(s). Open Recipes & Costs to see matched prices.");
+      }
 
     } catch (error) {
       console.error("Critical extraction fault:", error);
@@ -2757,13 +2863,38 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
   const [recipesList, setRecipesList] = useState([]);
   const [selectedRecipe, setSelectedRecipe] = useState(null);
   const [parsing, setParsing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  
-  // --- SCAN & VERIFY SYSTEM STATE ARCHITECTURE ---
+  const [successMessage, setSuccessMessage] = useState("");
+
+  // --- SCAN & VERIFY SYSTEM STATE ---
   const [scannedText, setScannedText] = useState("");
   const [scannedRecipeName, setScannedRecipeName] = useState("");
   const [scannedCategory, setScannedCategory] = useState("Mains");
   const [scannedYield, setScannedYield] = useState("1 Portion");
+  const [scannedSellPrice, setScannedSellPrice] = useState("18.00");
+
+  // --- DEVICE CAPTURE STATE (attach + take photo) ---
+  const [file, setFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [showOptions, setShowOptions] = useState(false);
+  const [showLaptopCamera, setShowLaptopCamera] = useState(false);
+
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const cameraInputRef = useRef(null);
+  const photoInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // --- RESPONSIVE VIEWPORT (laptop + phone editing) ---
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const activeKitchenId = kitchenId || user?.id;
 
@@ -2801,88 +2932,212 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
     }
   };
 
-  // STEP 1: IMAGE-TO-TEXT SIMULATED CAPTURE (Spec-Compliant Canned Responses)
-  const handleFileChange = async (e) => {
-    if (!e.target.files || !e.target.files[0]) return;
-    const targetFile = e.target.files[0];
-    
-    setParsing(true);
+  // ============================================================
+  // STEP 1: DEVICE CAPTURE — attach file / photo / take photo
+  // ============================================================
+  const stageFile = (selected) => {
+    if (!selected) return;
+    setFile(selected);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(URL.createObjectURL(selected));
+    setShowOptions(false);
     setErrorMessage("");
-    setScannedText(""); 
+    setSuccessMessage("");
+  };
 
+  const handleFileChange = (e) => {
+    const selected = e.target.files && e.target.files[0];
+    if (selected) stageFile(selected);
+    if (e.target) e.target.value = "";
+  };
+
+  const handleTakePhoto = async () => {
+    setShowOptions(false);
+    const isMobileDevice = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobileDevice) {
+      cameraInputRef.current?.click();
+      return;
+    }
+    // Laptop / desktop webcam
+    setShowLaptopCamera(true);
     try {
-      // Simulate real OCR processing latency delay
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-
-      // Spec Compliant Mock Extracted Payloads based on common kitchen cards
-      const mockDatabasePayloads = [
-        {
-          recipe_name: "Slow-Braised Short Rib",
-          category: "Mains",
-          yield: "12 portions",
-          raw_ingredients_text: "Beef Short Ribs - 5.0 kg\nMirepoix (Onion/Carrot/Celery) - 1.2 kg\nRed Wine (Cooking) - 750 mL\nVeal Glace Demi-Stock - 2.5 L\nFresh Thyme Sprigs - 10 g\nGarlic Cloves - 50 g"
-        },
-        {
-          recipe_name: "Classic Citrus Vinaigrette",
-          category: "Dressings",
-          yield: "1.5 Liters",
-          raw_ingredients_text: "Fresh Orange Juice - 500 mL\nLemon Juice Extra Virgin - 150 mL\nDijon Mustard - 60 g\nHoney or Nectar - 45 g\nCanola Salad Oil - 800 mL\nFine Sea Salt - 12 g"
-        },
-        {
-          recipe_name: "Artisan Sourdough Boule",
-          category: "Bakery",
-          yield: "4 Loaves",
-          raw_ingredients_text: "Unbleached Bread Flour - 2.0 kg\nFiltered Water (Room Temp) - 1.4 L\nActive Sourdough Starter - 400 g\nFine Sea Salt - 40 g"
-        }
-      ];
-
-      // Dynamically select a recipe payload to simulate randomized document scanning
-      const selectedPayload = mockDatabasePayloads[Math.floor(Math.random() * mockDatabasePayloads.length)];
-
-      setScannedRecipeName(selectedPayload.recipe_name);
-      setScannedCategory(selectedPayload.category);
-      setScannedYield(selectedPayload.yield);
-      setScannedText(selectedPayload.raw_ingredients_text);
-
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      streamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
     } catch (err) {
-      console.error("Scanner Capture Error:", err);
-      setErrorMessage("Failed to read image template layers.");
-    } finally {
-      setParsing(false);
-      if (e.target && e.target.files) e.target.value = ""; 
+      setErrorMessage("Webcam unavailable: " + err.message);
+      setShowLaptopCamera(false);
     }
   };
 
-  // STEP 2: VERIFIED DATABASE BATCH INSERTER & CROSS-TAB REVALIDATION
-  const handleCommitScannedData = async () => {
-    if (!scannedText.trim()) {
-      setErrorMessage("Cannot commit an empty text block to the database.");
+  const captureLaptopSnapshot = () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = videoRef.current.videoWidth || 640;
+    canvas.height = videoRef.current.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const capturedFile = new File([blob], `recipe_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      stageFile(capturedFile);
+      closeLaptopCamera();
+    }, 'image/jpeg');
+  };
+
+  const closeLaptopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    streamRef.current = null;
+    setShowLaptopCamera(false);
+  };
+
+  const clearStagedFile = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setFile(null);
+    setPreviewUrl(null);
+  };
+
+  // Stop the webcam if the user leaves the screen mid-capture
+  useEffect(() => () => closeLaptopCamera(), []);
+
+  // ============================================================
+  // STEP 2: REAL OCR / EXTRACTION via the parse-recipe edge function
+  // ============================================================
+  const handleRunExtraction = async () => {
+    if (!file) {
+      setErrorMessage("Attach or capture a recipe image first.");
       return;
     }
     if (!supabaseClient) {
-      setErrorMessage("Supabase connection provider context uninitialized.");
+      setErrorMessage("Supabase connection is not initialised.");
       return;
     }
-    
+
     setParsing(true);
     setErrorMessage("");
+    setSuccessMessage("");
 
     try {
-      const individualLines = scannedText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-      
+      // Convert the staged image to a base64 payload (mirrors the invoice pipeline)
+      const base64Payload = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(String(reader.result).split(',')[1]);
+        reader.onerror = (e) => reject(e);
+      });
+
+      const fileExt = file.name ? file.name.split('.').pop() : 'jpg';
+
+      const { data: result, error: functionError } = await supabaseClient.functions
+        .invoke('parse-recipe', {
+          body: {
+            image: base64Payload,
+            fileType: fileExt,
+            currentRecipes: recipes
+          }
+        });
+
+      if (functionError) throw functionError;
+
+      // Defensive extraction across possible response shapes
+      const parsed = result?.recipe || result?.data || result;
+      if (!parsed) {
+        throw new Error("The parse-recipe engine returned an empty response.");
+      }
+
+      const name = parsed.recipe_name || parsed.name || parsed.title || "";
+      const category = parsed.category || parsed.type || "Mains";
+      const yieldSize = parsed.yield || parsed.yields || parsed.portions || "1 Portion";
+      const sell = parsed.sell_price || parsed.price || "";
+
+      // Ingredients may come back as plain strings or as structured objects
+      const rawIngredients =
+        parsed.ingredients ||
+        parsed.line_items ||
+        parsed.items ||
+        [];
+
+      let ingredientLines = "";
+      if (typeof parsed.raw_ingredients_text === 'string') {
+        ingredientLines = parsed.raw_ingredients_text;
+      } else if (Array.isArray(rawIngredients)) {
+        ingredientLines = rawIngredients.map((ing) => {
+          if (typeof ing === 'string') return ing;
+          const iName = ing.name || ing.item || ing.description || "";
+          const iQty = ing.qty || ing.quantity || ing.amount || "";
+          const iUnit = ing.unit || "";
+          return [iName, [iQty, iUnit].filter(Boolean).join(' ')].filter(Boolean).join(' - ');
+        }).join('\n');
+      }
+
+      setScannedRecipeName(name);
+      setScannedCategory(category);
+      setScannedYield(yieldSize);
+      if (sell) setScannedSellPrice(String(sell));
+      setScannedText(ingredientLines);
+
+      if (!ingredientLines.trim()) {
+        setErrorMessage("No ingredient lines were detected. You can type them into the review box below before saving.");
+      }
+    } catch (err) {
+      console.error("Recipe extraction error:", err);
+      setErrorMessage(
+        (err?.message || "Extraction failed.") +
+        " — make sure the 'parse-recipe' edge function is deployed. You can still type the recipe into the review box and save it."
+      );
+      // Open an empty review box so the chef can still enter the recipe by hand
+      if (!scannedText) setScannedText(" ");
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  // ============================================================
+  // STEP 3: SAVE VERIFIED RECIPE TO SUPABASE (recipes table)
+  // One row per ingredient line — the schema Recipes & Costs reads.
+  // ============================================================
+  const handleCommitScannedData = async () => {
+    const cleanText = (scannedText || "").trim();
+    if (!cleanText) {
+      setErrorMessage("Nothing to save — the ingredient review box is empty.");
+      return;
+    }
+    if (!scannedRecipeName.trim()) {
+      setErrorMessage("Give the recipe a name before saving.");
+      return;
+    }
+    if (!supabaseClient) {
+      setErrorMessage("Supabase connection is not initialised.");
+      return;
+    }
+
+    setSaving(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const individualLines = cleanText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
+
+      if (individualLines.length === 0) {
+        throw new Error("No valid ingredient rows found in the review box.");
+      }
+
+      const sellValue = parseFloat(scannedSellPrice) || 0;
+
       const totalInsertRows = individualLines.map((ingredientRowText) => ({
         kitchen_id: activeKitchenId,
-        name: scannedRecipeName.trim() || "Scanned Recipe",
-        category: scannedCategory.trim() || "Main",
+        name: scannedRecipeName.trim(),
+        category: scannedCategory.trim() || "Mains",
         yield: scannedYield.trim() || "1 Portion",
-        sell_price: 18.00, // Assign default target sell value for automatic costing charts
+        sell_price: sellValue,
         ingredient_item: ingredientRowText,
         created_at: new Date().toISOString()
       }));
-
-      if (totalInsertRows.length === 0) {
-        throw new Error("No valid data rows found inside the review block.");
-      }
 
       const { data: committedRows, error: insertError } = await supabaseClient
         .from('recipes')
@@ -2891,14 +3146,18 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
 
       if (insertError) throw insertError;
 
-      // --- TARGET SYSTEM BROADCAST HANDLERS ---
-      // 1. Clears out the scratchpad state values
+      // Reset the capture + verify workspace
       setScannedText("");
-      
-      // 2. Dispatches your system window hook to alert other tab listeners
+      setScannedRecipeName("");
+      setScannedCategory("Mains");
+      setScannedYield("1 Portion");
+      setScannedSellPrice("18.00");
+      clearStagedFile();
+
+      // Notify other tabs that the database changed
       window.dispatchEvent(new Event('mise-db-update'));
 
-      // 3. Force direct app reload sync of local lists
+      // Re-pull the full list so the registry + Recipes & Costs reflect the new dish
       const { data: updatedSuite } = await supabaseClient
         .from('recipes')
         .select('*')
@@ -2908,21 +3167,23 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
       if (updatedSuite) {
         setRecipesList(updatedSuite);
         if (typeof onUpdateRecipes === 'function') {
-          onUpdateRecipes(updatedSuite); // Updates parent global arrays
+          onUpdateRecipes(updatedSuite); // propagate to App -> Recipes & Costs tab
         }
         if (committedRows?.[0]) {
           setSelectedRecipe(committedRows[0]);
         }
       }
 
+      setSuccessMessage(`Saved "${totalInsertRows[0].name}" (${individualLines.length} ingredient rows). It is now in the Recipes & Costs tab.`);
     } catch (err) {
-      console.error("Database Save Loop Failure:", err);
-      setErrorMessage(err.message || "Failed to save verified rows to database.");
+      console.error("Database save failure:", err);
+      setErrorMessage(err.message || "Failed to save the recipe to the database.");
     } finally {
-      setParsing(false);
+      setSaving(false);
     }
   };
 
+  // Group flat ingredient rows back into distinct recipes (by name)
   const groupedRecipesMap = (recipesList || []).reduce((acc, current) => {
     if (!acc[current.name]) {
       acc[current.name] = { ...current, ingredients: [] };
@@ -2936,13 +3197,20 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
   const groupedRecipesArray = Object.values(groupedRecipesMap);
   const activeViewObj = selectedRecipe ? groupedRecipesMap[selectedRecipe.name] : null;
 
+  const busy = parsing || saving;
+
   return (
     <div style={{ color: '#0e0e0c', minHeight: '80vh' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16, marginBottom: 24 }}>
+      {/* Hidden capture inputs */}
+      <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+      <input type="file" accept="image/*" ref={photoInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+      <input type="file" accept="image/*,.pdf" ref={fileInputRef} onChange={handleFileChange} style={{ display: 'none' }} />
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 16, marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ fontSize: 24, margin: 0, fontFamily: "'serif', Georgia", fontWeight: '800', color: '#0e0e0c' }}>Recipe Digitizer Matrix</h2>
+          <h2 style={{ fontSize: 24, margin: 0, fontFamily: "'Bitter', serif", fontWeight: '800', color: '#0e0e0c' }}>Recipe Digitizer</h2>
           <p style={{ margin: '4px 0 0 0', color: C.inkFade, fontSize: 13 }}>
-            Scan & Verify Architecture: Extract text structures automatically to populate database systems downstream.
+            Scan &amp; Verify: capture a recipe card, check the extracted text, then save it into your costing tables.
           </p>
         </div>
         <div style={{ textAlign: 'right' }}>
@@ -2955,98 +3223,149 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
 
       {errorMessage && (
         <div style={{ background: C.red, color: '#fff', padding: '12px 16px', borderRadius: 4, marginBottom: 16, fontSize: 13, fontWeight: 600 }}>
-          ⚠️ Notice: {errorMessage}
+          ⚠️ {errorMessage}
+        </div>
+      )}
+      {successMessage && (
+        <div style={{ background: C.green, color: '#fff', padding: '12px 16px', borderRadius: 4, marginBottom: 16, fontSize: 13, fontWeight: 600 }}>
+          ✓ {successMessage}
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 24, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1.1fr 0.9fr', gap: 24, alignItems: 'start' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          
-          {/* Uploader Block Area */}
-          <div style={{ background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, padding: '32px 16px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-            <input 
-              id="recipeFileInputElement" 
-              type="file" 
-              accept="image/*,.pdf" 
-              onChange={handleFileChange} 
-              style={{ display: 'none' }} 
-            />
-            <button
-              onClick={() => document.getElementById('recipeFileInputElement').click()}
-              disabled={parsing}
-              style={{
-                background: parsing ? '#333' : '#121210',
-                color: '#fff',
-                border: `1px solid ${C.inkRule}`,
-                padding: '12px 28px',
-                fontWeight: '700',
-                fontSize: '13px',
-                fontFamily: "'JetBrains Mono', monospace",
-                letterSpacing: '0.5px',
-                borderRadius: '4px',
-                cursor: parsing ? 'not-allowed' : 'pointer',
-                boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-                transition: 'all 0.15s ease',
-                minWidth: '240px',
-                textAlign: 'center'
-              }}
-            >
-              {parsing ? "🔄 PARSING IMAGE TEXT..." : "📷 Attach Recipe Image"}
-            </button>
+
+          {/* CAPTURE BLOCK */}
+          <div style={{ background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, padding: '24px 16px' }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.inkFade, letterSpacing: '0.5px', marginBottom: 14, textTransform: 'uppercase' }}>
+              Capture Recipe Card
+            </div>
+
+            {!previewUrl && !showLaptopCamera && (
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <button
+                  onClick={() => !busy && setShowOptions(true)}
+                  disabled={busy}
+                  style={{
+                    background: busy ? '#333' : '#121210', color: '#fff',
+                    border: `1px solid ${C.inkRule}`, padding: '12px 28px',
+                    fontWeight: '700', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace",
+                    letterSpacing: '0.5px', borderRadius: '4px',
+                    cursor: busy ? 'not-allowed' : 'pointer', minWidth: '240px', textAlign: 'center'
+                  }}
+                >
+                  📷 Attach or Take Photo
+                </button>
+              </div>
+            )}
+
+            {showLaptopCamera && (
+              <div style={{ textAlign: 'center' }}>
+                <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxWidth: '420px', borderRadius: 4, background: '#000' }} />
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 12 }}>
+                  <button onClick={captureLaptopSnapshot} style={{ background: '#121210', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: 4, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>📸 Capture</button>
+                  <button onClick={closeLaptopCamera} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.inkRule}`, padding: '8px 16px', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {previewUrl && !showLaptopCamera && (
+              <div>
+                <div style={{ position: 'relative', display: 'flex', justifyContent: 'center', background: '#121210', borderRadius: 4, padding: 10, marginBottom: 14 }}>
+                  <img src={previewUrl} alt="Staged recipe" style={{ maxHeight: 240, maxWidth: '100%', objectFit: 'contain' }} />
+                  <button onClick={clearStagedFile} style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '50%', width: 24, height: 24, cursor: 'pointer', fontWeight: 'bold' }}>×</button>
+                </div>
+                <button
+                  onClick={handleRunExtraction}
+                  disabled={busy}
+                  style={{
+                    width: '100%', background: busy ? '#555' : C.accent, color: '#fff', border: 'none',
+                    padding: '14px 16px', borderRadius: 4, cursor: busy ? 'not-allowed' : 'pointer',
+                    fontWeight: 700, fontSize: 13, fontFamily: "'JetBrains Mono', monospace", letterSpacing: '0.5px'
+                  }}
+                >
+                  {parsing ? "🔄 RUNNING AI RECOVERY..." : "⚡ RUN AI RECOVERY SCHEMATICS"}
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* SYSTEM VERIFICATION REVIEW DRAWER LAYER */}
+          {/* SOURCE OPTIONS MODAL */}
+          {showOptions && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(14,14,12,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+              <div style={{ background: '#fff', borderRadius: 6, width: '100%', maxWidth: 300, padding: 16, boxShadow: '0 12px 36px rgba(0,0,0,0.2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, paddingBottom: 6, borderBottom: `1px solid ${C.paper2}` }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: C.inkFade, fontFamily: "'JetBrains Mono', monospace" }}>SELECT SOURCE</span>
+                  <button onClick={() => setShowOptions(false)} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', lineHeight: 1 }}>×</button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <button onClick={() => fileInputRef.current?.click()} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12, textAlign: 'left', fontSize: 13, cursor: 'pointer' }}>📁 Select File (image / PDF)</button>
+                  <button onClick={() => photoInputRef.current?.click()} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12, textAlign: 'left', fontSize: 13, cursor: 'pointer' }}>🖼️ Select Photo</button>
+                  <button onClick={handleTakePhoto} style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12, textAlign: 'left', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>📷 Take a Photo</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* VERIFY / EDIT DRAWER (works on laptop + phone) */}
           {scannedText && (
             <div style={{ background: '#1d1d1b', border: `2px solid ${C.accent}`, borderRadius: 4, padding: 16, color: '#fff' }}>
               <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', marginBottom: 12, textTransform: 'uppercase' }}>
-                ✏️ Review and Adjust Extracted Text Items
+                ✏️ Review &amp; Adjust Extracted Recipe
               </div>
-              
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
                   <label style={{ fontSize: 11, color: '#aaa' }}>
-                    Recipe Name:
-                    <input type="text" value={scannedRecipeName} onChange={(e) => setScannedRecipeName(e.target.value)} style={{ width: '100%', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 6, fontSize: 12, borderRadius: 3, marginTop: 4 }} />
+                    Recipe Name
+                    <input type="text" value={scannedRecipeName} onChange={(e) => setScannedRecipeName(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
                   </label>
                   <label style={{ fontSize: 11, color: '#aaa' }}>
-                    Category:
-                    <input type="text" value={scannedCategory} onChange={(e) => setScannedCategory(e.target.value)} style={{ width: '100%', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 6, fontSize: 12, borderRadius: 3, marginTop: 4 }} />
+                    Category
+                    <input type="text" value={scannedCategory} onChange={(e) => setScannedCategory(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
                   </label>
                 </div>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 8 }}>
+                  <label style={{ fontSize: 11, color: '#aaa' }}>
+                    Yield Size
+                    <input type="text" value={scannedYield} onChange={(e) => setScannedYield(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
+                  </label>
+                  <label style={{ fontSize: 11, color: '#aaa' }}>
+                    Sell Price ({"\u00A3"})
+                    <input type="number" step="0.01" value={scannedSellPrice} onChange={(e) => setScannedSellPrice(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
+                  </label>
+                </div>
+
                 <label style={{ fontSize: 11, color: '#aaa' }}>
-                  Yield Size:
-                  <input type="text" value={scannedYield} onChange={(e) => setScannedYield(e.target.value)} style={{ width: '100%', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 6, fontSize: 12, borderRadius: 3, marginTop: 4 }} />
-                </label>
-                
-                <label style={{ fontSize: 11, color: '#aaa' }}>
-                  Ingredient lines (One item per row line):
+                  Ingredient lines (one item per row)
                   <textarea
-                    rows={8}
+                    rows={isMobile ? 6 : 8}
                     value={scannedText}
                     onChange={(e) => setScannedText(e.target.value)}
-                    style={{ width: '100%', background: '#121210', border: '1px solid #444', color: '#fff', fontFamily: 'monospace', padding: 10, fontSize: 12, borderRadius: 3, marginTop: 4, resize: 'vertical', lineHeight: '1.5' }}
+                    style={{ width: '100%', boxSizing: 'border-box', background: '#121210', border: '1px solid #444', color: '#fff', fontFamily: 'monospace', padding: 10, fontSize: 12, borderRadius: 3, marginTop: 4, resize: 'vertical', lineHeight: '1.5' }}
                   />
                 </label>
               </div>
 
               <button
                 onClick={handleCommitScannedData}
-                style={{ background: C.green, color: '#fff', border: 'none', padding: '12px 16px', borderRadius: 4, cursor: 'pointer', fontWeight: '700', fontSize: 13, width: '100%' }}
+                disabled={busy}
+                style={{ background: busy ? '#555' : C.green, color: '#fff', border: 'none', padding: '12px 16px', borderRadius: 4, cursor: busy ? 'not-allowed' : 'pointer', fontWeight: '700', fontSize: 13, width: '100%' }}
               >
-                💾 Save Verified Rows to Database
+                {saving ? "💾 SAVING..." : "💾 Confirm & Add to Library"}
               </button>
             </div>
           )}
 
-          {/* Local Digitizer List view */}
+          {/* REGISTRY LIST */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: C.inkFade, letterSpacing: '0.5px', marginBottom: 4, textTransform: 'uppercase' }}>
-              Digitized Recipe Table Registry
+              Digitized Recipe Registry
             </div>
 
             {groupedRecipesArray.length === 0 ? (
               <div style={{ color: C.inkFade, fontSize: 12, padding: 24, background: '#121210', border: `1px solid ${C.inkRule}`, borderRadius: 4, textAlign: 'center' }}>
-                No database records loaded yet.
+                No recipes saved yet.
               </div>
             ) : (
               groupedRecipesArray.map((rec, index) => {
@@ -3056,14 +3375,9 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
                     key={`group-rec-${index}`}
                     onClick={() => setSelectedRecipe(rec)}
                     style={{
-                      background: '#121210',
-                      border: `1px solid ${isSelected ? C.accent : C.inkRule}`,
-                      borderRadius: '4px',
-                      padding: '14px 16px',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      cursor: 'pointer'
+                      background: '#121210', border: `1px solid ${isSelected ? C.accent : C.inkRule}`,
+                      borderRadius: '4px', padding: '14px 16px', display: 'flex',
+                      justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer'
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -3089,15 +3403,15 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
           </div>
         </div>
 
-        {/* Right Details audit block */}
+        {/* DETAILS PANEL */}
         <div>
           <div style={{ background: C.paper2, border: `1px solid ${C.inkRule}`, borderRadius: 4, padding: 16, minHeight: 450 }}>
             <div style={{ borderBottom: `1px solid ${C.inkRule}`, paddingBottom: 10, marginBottom: 14 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-                CURRENT LIVE RECORD DETAILS
+                Current Record
               </div>
-              <h3 style={{ fontSize: 18, margin: '4px 0 0 0', fontFamily: "'serif', Georgia", fontWeight: '800' }}>
-                {activeViewObj ? activeViewObj.name : "Awaiting Metric Feed"}
+              <h3 style={{ fontSize: 18, margin: '4px 0 0 0', fontFamily: "'Bitter', serif", fontWeight: '800' }}>
+                {activeViewObj ? activeViewObj.name : "No recipe selected"}
               </h3>
             </div>
 
@@ -3105,25 +3419,25 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   <div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Classification</div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Category</div>
                     <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, marginTop: 1 }}>{activeViewObj.category || 'Main'}</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Target Base Price</div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Sell Price</div>
                     <div style={{ fontSize: 13, fontWeight: 600, color: C.green, marginTop: 1 }}>
-                      ${activeViewObj.sell_price ? parseFloat(activeViewObj.sell_price).toFixed(2) : '0.00'}
+                      {"\u00A3"}{activeViewObj.sell_price ? parseFloat(activeViewObj.sell_price).toFixed(2) : '0.00'}
                     </div>
                   </div>
                 </div>
 
                 <div>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Extracted Yield Size</div>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Yield</div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, marginTop: 1 }}>{activeViewObj.yield || '1 Portion'}</div>
                 </div>
 
                 <div>
                   <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase', marginBottom: 6 }}>
-                    Clean Ingredient Rows ({activeViewObj.ingredients.length})
+                    Ingredient Rows ({activeViewObj.ingredients.length})
                   </div>
                   <div style={{ border: `1px solid ${C.inkRule}`, borderRadius: 4, background: '#161614', padding: '10px 12px', color: '#fff', fontSize: 12, lineHeight: 1.6, fontFamily: 'monospace', display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {activeViewObj.ingredients.map((ing, i) => (
@@ -3137,7 +3451,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 260, color: C.inkFade }}>
                 <div style={{ fontSize: 24, marginBottom: 6 }}>📖</div>
-                <div style={{ fontSize: 12, fontWeight: 500 }}>Select a recipe record to audit metadata properties</div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>Select a recipe to view its details</div>
               </div>
             )}
           </div>
