@@ -1,191 +1,285 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase.js';
 
-// 1. CREATE THE AUTHENTICATION CONTEXT
-const AuthContext = createContext({ session: null, user: null, loading: true });
-
-// Local color tokens for the MISE visual language
+// Palette matching the rest of MISE
 const C = {
   paper: '#f7f1e3',
+  paper2: '#efe6d3',
   ink: '#0e0e0c',
-  inkSoft: '#3a3530',
   inkFade: '#5a4f40',
+  inkRule: '#1a1a18',
   accent: '#b8730a',
   red: '#b8362a',
   green: '#4a6b3a',
 };
 
-// 2. THE CONTEXT PROVIDER LAYER (Wraps App state)
-export function AuthProvider({ children }) {
+// ============================================================
+// useAuth — subscribes to Supabase auth, hands the user to the app
+// ============================================================
+export function useAuth() {
   const [user, setUser] = useState(null);
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Read current session status
+    let mounted = true;
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return;
       setSession(session);
-      setUser(session?.user ?? null);
+      setUser(session?.user || null);
       setLoading(false);
     });
-
-    // Listen live to state changes (logins, logouts)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
       setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
+      setUser(session?.user || null);
     });
+    return () => { mounted = false; subscription.unsubscribe(); };
+  }, []);
 
+  return { user, session, loading };
+}
+
+// ============================================================
+// LoginScreen / Auth — default export
+// Three modes: signin | signup | forgot
+// Plus a PASSWORD_RECOVERY mode that activates when Supabase
+// signals the user clicked the reset email and needs to set
+// a new password.
+// ============================================================
+export default function LoginScreen({ forceMode, onResetDone }) {
+  const [mode, setMode] = useState(forceMode || 'signin'); // 'signin' | 'signup' | 'forgot' | 'reset'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+
+  // Listen for the password-recovery event Supabase fires when the user
+  // arrives via the reset email link; switch into "set new password" mode.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setMode('reset');
+        setError('');
+        setInfo('You can now set a new password.');
+      }
+    });
     return () => subscription.unsubscribe();
   }, []);
 
-  const value = {
-    session,
-    user,
-    loading,
-    signOut: () => supabase.auth.signOut(),
+  const switchMode = (next) => {
+    setMode(next);
+    setError('');
+    setInfo('');
+    setPassword('');
+    setNewPassword('');
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-// 3. THE EXPORTED USEAUTH HOOK WHICH APP.JSX WANTS
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
-}
-
-// 4. THE VISUAL INTERFACE (Your original code turned into a clean Default Export)
-export default function Auth() {
-  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [kitchenName, setKitchenName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const [info, setInfo] = useState(null);
-
-  const submit = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    setError(null);
-    setInfo(null);
+    setError('');
+    setInfo('');
     setBusy(true);
-
     try {
-      if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              kitchen_name: kitchenName.trim() || 'My Kitchen',
-            },
-          },
+      if (mode === 'signin') {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        // session triggers the App-level redirect automatically
+      } else if (mode === 'signup') {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        setInfo("Account created. Check your email for the confirmation link, then come back here to sign in.");
+      } else if (mode === 'forgot') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin
         });
         if (error) throw error;
-        setInfo('Account created. Check your inbox to confirm your email, then sign in.');
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
+        setInfo("Password reset link sent. Check your email and click the link to set a new password.");
+      } else if (mode === 'reset') {
+        if (!newPassword || newPassword.length < 6) {
+          throw new Error("New password must be at least 6 characters.");
+        }
+        const { error } = await supabase.auth.updateUser({ password: newPassword });
         if (error) throw error;
+        // Sign out so the user explicitly signs back in with the new password
+        await supabase.auth.signOut();
+        setInfo("Password updated. Sign in with your new password.");
+        setMode('signin');
+        if (typeof onResetDone === 'function') onResetDone();
       }
     } catch (err) {
-      setError(err.message || 'Something went wrong.');
+      setError(err.message || String(err));
     } finally {
       setBusy(false);
     }
   };
 
-  return (
-    <div style={S.wrap}>
-      <div style={S.bgTexture} aria-hidden />
-      <div style={S.card}>
-        <div style={S.brandMark}>
-          <div style={S.brandRule} />
-          <div style={S.brandRule} />
-          <div style={S.brandRule} />
-        </div>
-        <div style={S.brand}>MISE</div>
-        <div style={S.brandSub}>back of house · {mode === 'signup' ? 'sign up' : 'sign in'}</div>
+  // ---- UI ----
+  const input = {
+    width: '100%', boxSizing: 'border-box',
+    background: '#fff', border: `1px solid ${C.paper2}`,
+    color: C.ink, padding: 12, fontSize: 14, borderRadius: 4,
+    fontFamily: "'JetBrains Mono', monospace",
+  };
+  const button = (primary) => ({
+    width: '100%', padding: 12, marginTop: 4,
+    background: primary ? C.accent : 'transparent',
+    color: primary ? '#fff' : C.ink,
+    border: primary ? 'none' : `1px solid ${C.paper2}`,
+    borderRadius: 4, fontWeight: 700, fontSize: 13,
+    fontFamily: "'JetBrains Mono', monospace",
+    cursor: busy ? 'not-allowed' : 'pointer',
+    opacity: busy ? 0.6 : 1,
+  });
+  const linkBtn = {
+    background: 'none', border: 'none', color: C.accent,
+    fontSize: 12, cursor: 'pointer', padding: 0,
+    fontFamily: "'JetBrains Mono', monospace", textDecoration: 'underline',
+  };
 
-        <form onSubmit={submit} style={S.form}>
-          {mode === 'signup' && (
-            <>
-              <label style={S.label}>KITCHEN NAME</label>
-              <input
-                style={S.input}
-                type="text"
-                value={kitchenName}
-                onChange={(e) => setKitchenName(e.target.value)}
-                placeholder="e.g. The Test Kitchen"
-              />
-            </>
+  const title = {
+    signin: 'Sign In',
+    signup: 'Create Account',
+    forgot: 'Reset Password',
+    reset: 'Set New Password',
+  }[mode];
+
+  const sub = {
+    signin: 'Sign in to your kitchen station.',
+    signup: 'New account for your kitchen station.',
+    forgot: "We'll email you a link to reset your password.",
+    reset: 'Enter a new password to finish signing in.',
+  }[mode];
+
+  return (
+    <div style={{
+      minHeight: '100vh', background: C.paper,
+      display: 'flex', justifyContent: 'center', alignItems: 'center',
+      padding: 20, fontFamily: 'system-ui, -apple-system, sans-serif',
+    }}>
+      <div style={{ width: '100%', maxWidth: 380 }}>
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ fontFamily: "'Bitter', serif", fontSize: 36, fontWeight: 900, letterSpacing: 2, color: C.ink }}>MISE</div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: 1.5, marginTop: 4, textTransform: 'uppercase' }}>
+            Rest-Ops Platform v6.4
+          </div>
+        </div>
+
+        <div style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 6, padding: 22 }}>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>{title}</div>
+            <div style={{ fontSize: 13, color: C.inkFade }}>{sub}</div>
+          </div>
+
+          {error && (
+            <div style={{ background: C.red, color: '#fff', padding: '10px 12px', borderRadius: 4, marginBottom: 12, fontSize: 12, fontWeight: 600 }}>
+              ⚠️ {error}
+            </div>
+          )}
+          {info && (
+            <div style={{ background: C.green, color: '#fff', padding: '10px 12px', borderRadius: 4, marginBottom: 12, fontSize: 12, fontWeight: 600 }}>
+              ✓ {info}
+            </div>
           )}
 
-          <label style={S.label}>EMAIL</label>
-          <input
-            style={S.input}
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {/* Email — needed for signin, signup and forgot. Hidden on reset. */}
+            {mode !== 'reset' && (
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.inkFade }}>
+                Email
+                <input
+                  type="email"
+                  required
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  style={{ ...input, marginTop: 4 }}
+                />
+              </label>
+            )}
 
-          <label style={S.label}>PASSWORD</label>
-          <input
-            style={S.input}
-            type="password"
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+            {/* Password — for signin and signup */}
+            {(mode === 'signin' || mode === 'signup') && (
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.inkFade }}>
+                Password
+                <input
+                  type="password"
+                  required
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  style={{ ...input, marginTop: 4 }}
+                />
+              </label>
+            )}
 
-          {error && <div style={S.error}>⚠ {error}</div>}
-          {info && <div style={S.info}>✓ {info}</div>}
+            {/* New password — only in reset mode */}
+            {mode === 'reset' && (
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.inkFade }}>
+                New Password (min 6 characters)
+                <input
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  style={{ ...input, marginTop: 4 }}
+                />
+              </label>
+            )}
 
-          <button type="submit" style={S.btnPrimary} disabled={busy}>
-            {busy ? '…' : mode === 'signup' ? 'Create account' : 'Sign in'}
-          </button>
+            <button type="submit" disabled={busy} style={button(true)}>
+              {busy ? 'Working…' : (
+                mode === 'signin' ? 'Sign In' :
+                mode === 'signup' ? 'Create Account' :
+                mode === 'forgot' ? 'Send Reset Link' :
+                'Update Password'
+              )}
+            </button>
+          </form>
 
-          <button
-            type="button"
-            style={S.btnGhost}
-            onClick={() => {
-              setMode(mode === 'signup' ? 'signin' : 'signup');
-              setError(null);
-              setInfo(null);
-            }}
-          >
-            {mode === 'signup' ? 'Have an account? Sign in' : 'New here? Create account'}
-          </button>
-        </form>
+          {/* Mode-switch links */}
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.paper2}`, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
+            {mode === 'signin' && (
+              <>
+                <button type="button" onClick={() => switchMode('forgot')} style={linkBtn}>
+                  Forgot your password?
+                </button>
+                <div style={{ fontSize: 12, color: C.inkFade }}>
+                  No account?{' '}
+                  <button type="button" onClick={() => switchMode('signup')} style={linkBtn}>
+                    Create one
+                  </button>
+                </div>
+              </>
+            )}
+            {mode === 'signup' && (
+              <div style={{ fontSize: 12, color: C.inkFade }}>
+                Already have an account?{' '}
+                <button type="button" onClick={() => switchMode('signin')} style={linkBtn}>
+                  Sign in
+                </button>
+              </div>
+            )}
+            {mode === 'forgot' && (
+              <button type="button" onClick={() => switchMode('signin')} style={linkBtn}>
+                ← Back to sign in
+              </button>
+            )}
+            {mode === 'reset' && (
+              <button type="button" onClick={() => switchMode('signin')} style={linkBtn}>
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ textAlign: 'center', marginTop: 16, fontSize: 10, color: C.inkFade, fontFamily: "'JetBrains Mono', monospace" }}>
+          Secure session powered by Supabase
+        </div>
       </div>
     </div>
   );
 }
-
-// Visual Styles mapping
-const S = {
-  wrap: { minHeight: '100vh', background: C.paper, color: C.ink, fontFamily: "'Bitter',Georgia,serif", display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, position: 'relative' },
-  bgTexture: { position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0, backgroundImage: 'repeating-linear-gradient(0deg,transparent,transparent 23px,rgba(26,26,24,0.025) 23px,rgba(26,26,24,0.025) 24px)' },
-  card: { position: 'relative', zIndex: 1, background: C.paper, border: `2px solid ${C.ink}`, padding: '36px 32px', width: '100%', maxWidth: 380, boxShadow: `1px 1px 0 ${C.inkFade},4px 4px 0 rgba(14,14,12,0.06)` },
-  brandMark: { display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 14 },
-  brandRule: { width: 28, height: 2, background: C.accent },
-  brand: { fontFamily: "'Bitter',serif", fontWeight: 800, fontSize: 24, letterSpacing: '5px', color: C.ink },
-  brandSub: { fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: C.inkFade, letterSpacing: '2px', textTransform: 'uppercase', marginTop: 4, marginBottom: 28 },
-  form: { display: 'flex', flexDirection: 'column', gap: 6 },
-  label: { fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: C.inkFade, letterSpacing: '2px', fontWeight: 700, marginTop: 10 },
-  input: { background: C.paper, border: `1px solid ${C.ink}`, color: C.ink, fontFamily: "'Bitter',serif", fontSize: 14, padding: '10px 12px', borderRadius: 0 },
-  btnPrimary: { background: C.ink, color: C.paper, border: 'none', padding: '12px 22px', fontFamily: "'Bitter',serif", fontWeight: 700, fontSize: 13, letterSpacing: '0.5px', cursor: 'pointer', borderRadius: 0, marginTop: 18 },
-  btnGhost: { background: 'transparent', color: C.ink, border: `1px solid ${C.ink}`, padding: '10px 22px', fontFamily: "'Bitter',serif", fontWeight: 600, fontSize: 12, cursor: 'pointer', borderRadius: 0, marginTop: 8 },
-  error: { background: 'rgba(184,54,42,0.08)', border: `1px solid ${C.red}`, color: C.red, padding: '10px 12px', fontSize: 12, marginTop: 12 },
-  info: { background: 'rgba(74,107,58,0.08)', border: `1px solid ${C.green}`, color: C.green, padding: '10px 12px', fontSize: 12, marginTop: 12 },
-};

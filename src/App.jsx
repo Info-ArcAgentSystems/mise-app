@@ -50,8 +50,32 @@ export function calculateForecastConfidence(salesArray = []) {
 export default function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [tab, setTab] = useState('dashboard');
+  const [tab, setTab] = useState(() => {
+    if (typeof window === 'undefined') return 'dashboard';
+    try {
+      const saved = window.localStorage.getItem('mise:lastTab');
+      return saved || 'dashboard';
+    } catch {
+      return 'dashboard';
+    }
+  });
+
+  // Keep the last-active tab so a refresh returns to the same screen
+  useEffect(() => {
+    try { window.localStorage.setItem('mise:lastTab', tab); } catch {}
+  }, [tab]);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Password-recovery detection — Supabase's reset link establishes a session
+  // immediately, so without this we'd skip past the Auth screen and the user
+  // would never get to set a new password. We catch it two ways:
+  // 1. URL hash (#access_token=...&type=recovery) on initial load
+  // 2. The PASSWORD_RECOVERY event on the auth listener
+  const [passwordRecovery, setPasswordRecovery] = useState(() => {
+    if (typeof window === 'undefined' || !window.location.hash) return false;
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    return params.get('type') === 'recovery';
+  });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -59,8 +83,9 @@ export default function App() {
       setAuthLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
     });
 
     return () => subscription.unsubscribe();
@@ -88,8 +113,19 @@ export default function App() {
     );
   }
 
-  if (!session) {
-    return <Auth />;
+  if (!session || passwordRecovery) {
+    return (
+      <Auth
+        forceMode={passwordRecovery ? 'reset' : undefined}
+        onResetDone={() => {
+          setPasswordRecovery(false);
+          if (typeof window !== 'undefined' && window.history.replaceState) {
+            // Clear the recovery hash so a refresh doesn't drop us back here
+            window.history.replaceState(null, '', window.location.pathname + window.location.search);
+          }
+        }}
+      />
+    );
   }
 
  if (!loaded) return <div style={{display:'flex',justifyContent:'center',alignItems:'center',height:'100vh',background:C.paper,color:C.ink,fontFamily:'sans-serif'}}>Synchronizing Kitchen Ledger...</div>;
@@ -319,6 +355,15 @@ const settings = customSettings && Object.keys(customSettings).length > 0
                 })}
               </div>
             ))}
+          </div>
+          {/* Footer: log out from phone */}
+          <div style={{ borderTop: `1px solid ${C.inkRule}`, padding: 12 }}>
+            <button
+              onClick={async () => { setDrawerOpen(false); await supabase.auth.signOut(); }}
+              style={{ ...S.signOutBtn, width: '100%', textAlign: 'center', color: C.red, background: 'transparent', border: `1px solid ${C.red}`, borderRadius: 4, padding: '10px', fontWeight: 700, fontSize: 13 }}
+            >
+              Leave Station
+            </button>
           </div>
         </div>
       )}
@@ -1098,6 +1143,16 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
   const activeKitchenId = kitchenId || user?.id;
   const currencySymbol = settings?.currency || '£';
 
+  // Responsive: stack the two-column layout on phones
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   // Load recipes, invoices and invoice lines straight from the database.
   // The DB rows are the source of truth and always include ingredient_item;
   // the app-state prop can arrive in a reduced shape that drops it.
@@ -1176,30 +1231,93 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
   // Convert a quantity from one unit to another within the same family
   // (mass: g/kg, volume: ml/l, count: ea). Returns null if not convertible.
   const UNIT_FACTORS = {
+    // mass (base: g)
     g: { family: 'mass', toBase: 1 },
     kg: { family: 'mass', toBase: 1000 },
+    // volume (base: ml)
     ml: { family: 'volume', toBase: 1 },
     l: { family: 'volume', toBase: 1000 },
+    tsp: { family: 'volume', toBase: 5 },
+    tbs: { family: 'volume', toBase: 15 },
+    tbsp: { family: 'volume', toBase: 15 },
+    cup: { family: 'volume', toBase: 240 },
+    pinch: { family: 'volume', toBase: 0.5 }, // approximate culinary pinch
+    // count (base: each)
     ea: { family: 'count', toBase: 1 },
     each: { family: 'count', toBase: 1 },
     pcs: { family: 'count', toBase: 1 },
     unit: { family: 'count', toBase: 1 },
   };
 
+  // Approximate kitchen densities (g/ml) for converting volume measurements
+  // to weight when the invoice prices an ingredient by mass. Pulled from
+  // standard culinary references; close enough for costing.
+  const KITCHEN_DENSITIES = {
+    'cocoa': 0.55, 'cocoa powder': 0.55,
+    'flour': 0.55, 'plain flour': 0.55, 'bread flour': 0.55,
+    'sugar': 0.85, 'caster sugar': 0.85, 'granulated sugar': 0.85,
+    'icing sugar': 0.56, 'brown sugar': 0.93,
+    'baking soda': 0.92, 'bicarbonate of soda': 0.92,
+    'baking powder': 0.95,
+    'salt': 1.20, 'sea salt': 1.20, 'table salt': 1.30,
+    'pepper': 0.50, 'black pepper': 0.50,
+    'butter': 0.91, 'lard': 0.92,
+    'milk': 1.03, 'cream': 0.99, 'double cream': 0.99,
+    'water': 1.00,
+    'oil': 0.92, 'olive oil': 0.92, 'vegetable oil': 0.92, 'sunflower oil': 0.92,
+    'honey': 1.40, 'syrup': 1.32, 'golden syrup': 1.42,
+    'yeast': 0.50,
+    'rice': 0.75, 'oats': 0.40,
+  };
+
   const parseQtyUnit = (text) => {
     const t = (text || "").toLowerCase();
+    // "a pinch of salt" with no number → treat as 1 pinch
+    if (/\bpinch\b/.test(t)) {
+      const m = t.match(/([0-9]+(?:\.[0-9]+)?)/);
+      return { qty: m ? parseFloat(m[1]) : 1, unit: 'pinch' };
+    }
     const numMatch = t.match(/([0-9]+(?:\.[0-9]+)?)/);
     const qty = numMatch ? parseFloat(numMatch[1]) : null;
-    const unitMatch = t.match(/\b(kg|g|ml|l|ea|each|pcs|unit)\b/);
-    const unit = unitMatch ? unitMatch[1] : null;
+    const unitMatch = t.match(/\b(kg|g|ml|l|tsp|tbsp|tbs|cup|cups|ea|each|pcs|unit)\b/);
+    let unit = unitMatch ? unitMatch[1] : null;
+    if (unit === 'cups') unit = 'cup';
     return { qty, unit };
   };
 
-  const convertQty = (qty, fromUnit, toUnit) => {
+  // Look up a density for an ingredient, allowing fuzzy substring matches.
+  const lookupDensity = (name) => {
+    const key = (name || '').toLowerCase().trim();
+    if (!key) return null;
+    if (KITCHEN_DENSITIES[key] != null) return KITCHEN_DENSITIES[key];
+    for (const dKey of Object.keys(KITCHEN_DENSITIES)) {
+      if (key.includes(dKey) || dKey.includes(key)) return KITCHEN_DENSITIES[dKey];
+    }
+    return null;
+  };
+
+  const convertQty = (qty, fromUnit, toUnit, ingredientName) => {
     const f = UNIT_FACTORS[fromUnit];
     const t = UNIT_FACTORS[toUnit];
-    if (!f || !t || f.family !== t.family) return null;
-    return (qty * f.toBase) / t.toBase;
+    if (!f || !t) return null;
+    // Same family — straightforward
+    if (f.family === t.family) return (qty * f.toBase) / t.toBase;
+    // Cross-family (volume <-> mass) requires a density lookup
+    if ((f.family === 'volume' && t.family === 'mass') ||
+        (f.family === 'mass'   && t.family === 'volume')) {
+      const density = lookupDensity(ingredientName); // g/ml
+      if (density == null) return null;
+      if (f.family === 'volume' && t.family === 'mass') {
+        const ml = qty * f.toBase;
+        const grams = ml * density;
+        return grams / t.toBase;
+      } else {
+        const grams = qty * f.toBase;
+        const ml = grams / density;
+        return ml / t.toBase;
+      }
+    }
+    return null; // count <-> mass/volume isn't safe to auto-convert
   };
 
   const evaluatedCostingData = useMemo(() => {
@@ -1214,20 +1332,19 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
         if (!lineName || !ingredientText) return false;
         return ingredientText.includes(lineName) || lineName.includes(ingredientText);
       });
-      // ...then prefer one that actually carries a price (ignores stale £0 duplicates).
-      const pricedCandidate = matchCandidates.find((line) =>
-        (parseFloat(line.price_per_unit || 0) || 0) > 0 ||
-        (parseFloat(line.line_total || 0) || 0) > 0
-      );
-      const matchedLine = pricedCandidate || matchCandidates[0] || null;
-
-      const matchedQty = matchedLine ? parseFloat(matchedLine.qty || 1) || 1 : 1;
-      let unitPrice = matchedLine ? parseFloat(matchedLine.price_per_unit || 0) || 0 : 0;
-      const matchedLineTotal = matchedLine ? parseFloat(matchedLine.line_total || 0) || 0 : 0;
-      // If only the line total was captured, back out the per-unit price
-      if (unitPrice === 0 && matchedLineTotal > 0 && matchedQty > 0) {
-        unitPrice = matchedLineTotal / matchedQty;
-      }
+      // ...compute an effective unit price for each (derive from line total if needed)...
+      const scored = matchCandidates.map((line) => {
+        const q = parseFloat(line.qty || 1) || 1;
+        const p = parseFloat(line.price_per_unit || 0) || 0;
+        const t = parseFloat(line.line_total || 0) || 0;
+        const eff = p > 0 ? p : (t > 0 && q > 0 ? t / q : 0);
+        return { line, eff };
+      });
+      // ...then keep the one with the highest real price (ignores stale £0 duplicates).
+      scored.sort((a, b) => b.eff - a.eff);
+      const best = scored[0] || null;
+      const matchedLine = best ? best.line : null;
+      const unitPrice = best ? best.eff : 0;
       const invUnit = matchedLine ? (matchedLine.unit || "").toLowerCase().trim() : "";
 
       // Figure out the recipe's quantity and unit, then convert to the invoice's unit
@@ -1239,8 +1356,12 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
         const recipeConvertible = recipe.qty != null && recipe.unit && UNIT_FACTORS[recipe.unit];
         const invFamily = UNIT_FACTORS[invUnit] ? UNIT_FACTORS[invUnit].family : null;
 
-        if (recipeConvertible && invFamily) {
-          const converted = convertQty(recipe.qty, recipe.unit, invUnit);
+        if (unitPrice === 0) {
+          // Linked to an invoice item, but that item has no price stored
+          lineCostTotal = 0;
+          costNote = "invoice has no price — re-scan the invoice";
+        } else if (recipeConvertible && invFamily) {
+          const converted = convertQty(recipe.qty, recipe.unit, invUnit, matchedLine.name || row.ingredient_item);
           if (converted != null) {
             lineCostTotal = converted * unitPrice;            // unit-aware (accurate)
           } else {
@@ -1269,18 +1390,29 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
       };
     });
 
+    // Parse the number of portions out of the yield text ("9 portions", "2 servings", "1 Portion")
+    const yieldText = activeRecipeRows[0]?.yield || "1 Portion";
+    const yieldMatch = yieldText.match(/([0-9]+(?:\.[0-9]+)?)/);
+    const portionsPerBatch = yieldMatch ? parseFloat(yieldMatch[1]) : 1;
+    const safePortions = portionsPerBatch > 0 ? portionsPerBatch : 1;
+
+    // Sell price is per portion; recipe cost is for the whole batch.
+    // Compare like with like — convert both to per-portion before computing FC%.
     const targetPrice = parseFloat(editSellPrice || 0) || activeRecipeRows[0]?.sell_price || 0;
-    const foodCostPercentage = targetPrice > 0 ? (combinedRecipeCost / targetPrice) * 100 : 0;
-    const grossProfitPercentage = targetPrice > 0 ? ((targetPrice - combinedRecipeCost) / targetPrice) * 100 : 0;
+    const costPerPortion = combinedRecipeCost / safePortions;
+    const foodCostPercentage = targetPrice > 0 ? (costPerPortion / targetPrice) * 100 : 0;
+    const grossProfitPercentage = targetPrice > 0 ? ((targetPrice - costPerPortion) / targetPrice) * 100 : 0;
 
     return {
       ingredientsList: items,
       totalCost: combinedRecipeCost,
+      costPerPortion: costPerPortion,
+      portionsPerBatch: safePortions,
       sellPrice: targetPrice,
       fcPercent: foodCostPercentage,
       gpPercent: grossProfitPercentage,
       category: activeRecipeRows[0]?.category || "Main Course",
-      yieldSize: activeRecipeRows[0]?.yield || "1 Portion"
+      yieldSize: yieldText
     };
   }, [activeRecipeRows, localInvoiceLines, editSellPrice]);
 
@@ -1337,12 +1469,12 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
       )}
 
       {/* Selector Dropdown Matrix */}
-      <div style={{ background: paletteColors.paper, border: `1px solid ${paletteColors.inkRule}`, borderRadius: 4, padding: 12, marginBottom: 20, display: 'flex', alignItems: 'center', gap: 16 }}>
-        <label style={{ fontSize: 12, fontWeight: 700, color: '#3a3530', minWidth: '130px' }}>Active Menu Card:</label>
+      <div style={{ background: paletteColors.paper, border: `1px solid ${paletteColors.inkRule}`, borderRadius: 4, padding: 12, marginBottom: 20, display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center', gap: isMobile ? 8 : 16 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: '#3a3530', minWidth: isMobile ? 'auto' : '130px' }}>Active Menu Card:</label>
         <select 
           value={selectedRecipeName} 
           onChange={(e) => setSelectedRecipeName(e.target.value)}
-          style={{ padding: '8px 12px', background: '#000', color: '#fff', border: '1px solid #333', borderRadius: 4, fontSize: 13, flex: 1, fontFamily: 'monospace' }}
+          style={{ padding: '8px 12px', background: '#000', color: '#fff', border: '1px solid #333', borderRadius: 4, fontSize: 13, flex: 1, width: isMobile ? '100%' : 'auto', boxSizing: 'border-box', fontFamily: 'monospace' }}
         >
           {uniqueRecipeNames.length === 0 ? (
             <option>No Active Recipes Inside Registry</option>
@@ -1355,7 +1487,7 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
       </div>
 
       {uniqueRecipeNames.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: 20, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1.2fr 0.8fr', gap: 20, alignItems: 'start' }}>
           
           {/* Left panel breakdown lines */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -1366,10 +1498,10 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {evaluatedCostingData.ingredientsList.map((item, idx) => (
-                  <div key={idx} style={{ background: '#1c1c1a', borderLeft: `3px solid ${item.isMatched ? paletteColors.green : paletteColors.red}`, padding: 10, borderRadius: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <div style={{ color: '#fff', fontSize: 13, fontWeight: '600', fontFamily: 'monospace' }}>{item.rawText}</div>
-                      <div style={{ fontSize: 11, color: item.isMatched ? paletteColors.green : '#9a8f80', marginTop: 3 }}>
+                  <div key={idx} style={{ background: '#1c1c1a', borderLeft: `3px solid ${item.isMatched ? paletteColors.green : paletteColors.red}`, padding: 10, borderRadius: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ color: '#fff', fontSize: 13, fontWeight: '600', fontFamily: 'monospace', wordBreak: 'break-word' }}>{item.rawText}</div>
+                      <div style={{ fontSize: 11, color: item.isMatched ? paletteColors.green : '#9a8f80', marginTop: 3, wordBreak: 'break-word' }}>
                         🔗 Linked Invoice Item: <span style={{ fontWeight: 600 }}>{item.matchedName}</span>
                         {item.isMatched && <span style={{ color: paletteColors.inkFade }}> · {currencySymbol}{item.unitCost.toFixed(2)}/unit</span>}
                       </div>
@@ -1377,7 +1509,7 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
                         <div style={{ fontSize: 10, color: paletteColors.accent, marginTop: 2 }}>⚠ {item.costNote}</div>
                       )}
                     </div>
-                    <div style={{ textAlign: 'right', fontFamily: 'monospace' }}>
+                    <div style={{ textAlign: 'right', fontFamily: 'monospace', flexShrink: 0 }}>
                       <div style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>{currencySymbol}{item.totalItemCost.toFixed(2)}</div>
                       <div style={{ fontSize: 10, color: paletteColors.inkFade }}>Computed Subtotal</div>
                     </div>
@@ -1428,6 +1560,16 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
               <div style={{ fontSize: 26, fontWeight: 900, color: '#fff', fontFamily: 'monospace', marginTop: 4 }}>
                 {currencySymbol}{evaluatedCostingData.totalCost.toFixed(2)}
               </div>
+              <div style={{ fontSize: 10, color: paletteColors.inkFade, marginTop: 4 }}>
+                Whole batch ({evaluatedCostingData.portionsPerBatch} {evaluatedCostingData.portionsPerBatch === 1 ? 'portion' : 'portions'})
+              </div>
+            </div>
+
+            <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: paletteColors.inkFade, textTransform: 'uppercase' }}>Cost Per Portion</div>
+              <div style={{ fontSize: 26, fontWeight: 900, color: '#fff', fontFamily: 'monospace', marginTop: 4 }}>
+                {currencySymbol}{evaluatedCostingData.costPerPortion.toFixed(2)}
+              </div>
             </div>
 
             <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
@@ -1435,6 +1577,7 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
               <div style={{ fontSize: 26, fontWeight: 900, color: paletteColors.accent, fontFamily: 'monospace', marginTop: 4 }}>
                 {currencySymbol}{evaluatedCostingData.sellPrice.toFixed(2)}
               </div>
+              <div style={{ fontSize: 10, color: paletteColors.inkFade, marginTop: 4 }}>Per portion</div>
             </div>
 
             <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
@@ -2399,6 +2542,17 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsing, setParsing] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
+
+  // Manual entry / edit modal state
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualEditingId, setManualEditingId] = useState(null); // null = creating new
+  const [manualSupplier, setManualSupplier] = useState("");
+  const [manualTotal, setManualTotal] = useState("");
+  const [manualLines, setManualLines] = useState([
+    { name: "", qty: "1", unit: "kg", price_per_unit: "", line_total: "" }
+  ]);
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualError, setManualError] = useState("");
   
   const [showLaptopCamera, setShowLaptopCamera] = useState(false);
   const videoRef = useRef(null);
@@ -2418,7 +2572,8 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     inkFade: '#5a4f40',
     highlight: '#f5e9c8',
     accent: '#b8730a',
-    green: '#4a6b3a'
+    green: '#4a6b3a',
+    red: '#b8362a'
   };
 
   const S = {
@@ -2426,12 +2581,32 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     card: { background: '#ffffff', border: `1px solid ${C.paper2}`, padding: '16px', borderRadius: '4px' }
   };
 
-  // ============================================================
-  // DATABASE RETRIEVAL & AI PROCESSING PIPELINE
-  // ============================================================
-  // ============================================================
-  // DATABASE RETRIEVAL & AI PROCESSING PIPELINE
-  // ============================================================
+  // Pull the invoice list straight from the DB so the UI matches what's
+  // actually saved (the app-state prop can drift if a delete leaves orphans).
+  useEffect(() => {
+    let cancelled = false;
+    const loadInvoices = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) return;
+        const { data } = await supabase
+          .from('invoices')
+          .select('*')
+          .eq('kitchen_id', uid)
+          .order('created_at', { ascending: false });
+        if (!cancelled && data && onUpdate) onUpdate(data);
+      } catch (err) {
+        console.error("Invoice list refresh failed:", err);
+      }
+    };
+    loadInvoices();
+    const onDbUpdate = () => loadInvoices();
+    window.addEventListener('mise-db-update', onDbUpdate);
+    return () => { cancelled = true; window.removeEventListener('mise-db-update', onDbUpdate); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ============================================================
   // DATABASE RETRIEVAL & AI PROCESSING PIPELINE
   // ============================================================
@@ -2520,6 +2695,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
       };
       let savedLineCount = 0;
       let lineSaveError = null;
+      let anyPricedLine = false;
       if (Array.isArray(extractedItems) && extractedItems.length > 0) {
         const formattedLines = extractedItems.map((item, index) => {
           const qty = toNum(item.qty || item.quantity || 1) || 1;
@@ -2529,6 +2705,8 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
           // Fill in whichever value is missing from the other
           if (pricePerUnit === 0 && lineTotal > 0 && qty > 0) pricePerUnit = lineTotal / qty;
           if (lineTotal === 0 && pricePerUnit > 0) lineTotal = pricePerUnit * qty;
+
+          if (pricePerUnit > 0 || lineTotal > 0) anyPricedLine = true;
 
           return {
             kitchen_id: activeKitchenId,
@@ -2576,6 +2754,14 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
         alert("Invoice saved, but its line items could NOT be stored.\n\nDatabase said: " + (lineSaveError.message || JSON.stringify(lineSaveError)) + "\n\nWithout line items, Recipes & Costs has no prices to match.");
       } else if (savedLineCount === 0) {
         alert("Invoice saved, but the scan returned 0 line items, so there are no prices to match in Recipes & Costs. Try a clearer photo or a more itemised invoice.");
+      } else if (!anyPricedLine) {
+        alert(
+          "⚠️ Scan partially worked.\n\n" +
+          "The AI read the line items (" + savedLineCount + " items: names, quantities, units) but couldn't read any of the prices on this scan. This is occasional OCR variance, not a bug in the app.\n\n" +
+          "Two ways to fix it:\n" +
+          "1. Click the ✏️ edit pencil on this invoice in the log below and type the prices in.\n" +
+          "2. Or delete it (🗑) and re-scan with a clearer photo, or use 'Enter Invoice Manually'."
+        );
       } else {
         alert("🎉 Success! Invoice saved with " + savedLineCount + " line item(s). Open Recipes & Costs to see matched prices.");
       }
@@ -2645,6 +2831,215 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     setPreviewUrl(null);
   };
 
+  // ============================================================
+  // MANUAL ENTRY / EDIT / DELETE — Invoices
+  // ============================================================
+  const resetManualForm = () => {
+    setManualEditingId(null);
+    setManualSupplier("");
+    setManualTotal("");
+    setManualLines([{ name: "", qty: "1", unit: "kg", price_per_unit: "", line_total: "" }]);
+    setManualError("");
+  };
+
+  const handleOpenManualInvoice = () => {
+    resetManualForm();
+    setManualOpen(true);
+  };
+
+  const handleEditInvoice = async (inv) => {
+    if (!inv) return;
+    setManualError("");
+    setManualEditingId(inv.id);
+    setManualSupplier(inv.supplier || "");
+    setManualTotal(inv.total != null ? String(inv.total) : "");
+    // Load this invoice's existing line items
+    try {
+      const { data: lineRows } = await supabase
+        .from('invoice_lines')
+        .select('*')
+        .eq('invoice_id', inv.id)
+        .order('position', { ascending: true });
+      if (lineRows && lineRows.length > 0) {
+        setManualLines(lineRows.map(l => ({
+          name: l.name || "",
+          qty: l.qty != null ? String(l.qty) : "1",
+          unit: l.unit || "ea",
+          price_per_unit: l.price_per_unit != null ? String(l.price_per_unit) : "",
+          line_total: l.line_total != null ? String(l.line_total) : ""
+        })));
+      } else {
+        setManualLines([{ name: "", qty: "1", unit: "kg", price_per_unit: "", line_total: "" }]);
+      }
+    } catch (err) {
+      console.error("Failed to load invoice lines for edit:", err);
+    }
+    setManualOpen(true);
+  };
+
+  const handleDeleteInvoice = async (inv) => {
+    if (!inv) return;
+    const confirmed = typeof window !== 'undefined'
+      ? window.confirm(`Delete invoice from "${inv.supplier || 'Unknown'}" (${currentCurrency}${parseFloat(inv.total || 0).toFixed(2)}) and all its line items?`)
+      : true;
+    if (!confirmed) return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const activeKitchenId = session?.user?.id;
+
+      // Lines first (no cascade assumed). .select() makes the API return the rows
+      // that were actually deleted — empty array means the DB silently refused.
+      const { data: deletedLines, error: linesErr } = await supabase
+        .from('invoice_lines')
+        .delete()
+        .eq('invoice_id', inv.id)
+        .select();
+      if (linesErr) throw linesErr;
+
+      const { data: deletedInvoice, error: invErr } = await supabase
+        .from('invoices')
+        .delete()
+        .eq('id', inv.id)
+        .select();
+      if (invErr) throw invErr;
+
+      if (!deletedInvoice || deletedInvoice.length === 0) {
+        throw new Error("The database returned 0 rows deleted. This usually means a Row-Level-Security policy is blocking DELETE on the 'invoices' table for this user. Open Supabase → Authentication → Policies and make sure there's a DELETE policy that allows kitchen_id = auth.uid().");
+      }
+
+      // Refresh the list straight from the DB so the UI matches reality
+      if (activeKitchenId) {
+        const { data: refreshed } = await supabase
+          .from('invoices')
+          .select('*')
+          .eq('kitchen_id', activeKitchenId)
+          .order('created_at', { ascending: false });
+        if (refreshed && onUpdate) onUpdate(refreshed);
+      } else {
+        if (onUpdate) onUpdate(safeInvoices.filter(i => i.id !== inv.id));
+      }
+
+      window.dispatchEvent(new Event('mise-db-update'));
+      alert(`Deleted invoice from "${inv.supplier || 'Unknown'}" and ${deletedLines ? deletedLines.length : 0} line item(s).`);
+    } catch (err) {
+      console.error("Delete invoice failed:", err);
+      alert("Failed to delete invoice:\n\n" + (err.message || err));
+    }
+  };
+
+  const updateManualLine = (idx, field, value) => {
+    setManualLines(prev => prev.map((row, i) => i === idx ? { ...row, [field]: value } : row));
+  };
+  const addManualLine = () => {
+    setManualLines(prev => [...prev, { name: "", qty: "1", unit: "kg", price_per_unit: "", line_total: "" }]);
+  };
+  const removeManualLine = (idx) => {
+    setManualLines(prev => prev.length > 1 ? prev.filter((_, i) => i !== idx) : prev);
+  };
+
+  const handleSaveManualInvoice = async () => {
+    setManualError("");
+    if (!manualSupplier.trim()) {
+      setManualError("Enter a supplier name.");
+      return;
+    }
+    const validLines = manualLines.filter(l => (l.name || "").trim());
+    if (validLines.length === 0) {
+      setManualError("Add at least one line item with a name.");
+      return;
+    }
+
+    setManualSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const activeKitchenId = session?.user?.id;
+      if (!activeKitchenId) throw new Error("No active session — please log in again.");
+
+      // Compute the total from the lines if the user didn't enter one
+      const computedTotal = validLines.reduce((sum, l) => {
+        const lt = parseFloat(l.line_total) || (parseFloat(l.qty || 1) * parseFloat(l.price_per_unit || 0)) || 0;
+        return sum + lt;
+      }, 0);
+      const totalToSave = parseFloat(manualTotal) || computedTotal;
+
+      let invoiceId = manualEditingId;
+
+      if (manualEditingId) {
+        // EDIT: update header, then wipe + replace its lines
+        const { data: updatedRows, error: updErr } = await supabase
+          .from('invoices')
+          .update({ supplier: manualSupplier.trim(), total: totalToSave })
+          .eq('id', manualEditingId)
+          .select();
+        if (updErr) throw updErr;
+        if (!updatedRows || updatedRows.length === 0) {
+          throw new Error("The invoice update returned 0 rows. A Row-Level-Security UPDATE policy on the 'invoices' table is probably blocking this user from editing.");
+        }
+        const { error: linesDelErr } = await supabase
+          .from('invoice_lines')
+          .delete()
+          .eq('invoice_id', manualEditingId)
+          .select(); // .select() so RLS issues surface as a real error rather than silently doing nothing
+        if (linesDelErr) {
+          throw new Error("Failed to clear the old line items before re-inserting: " + linesDelErr.message);
+        }
+      } else {
+        // CREATE
+        const { data: inserted, error: insErr } = await supabase
+          .from('invoices')
+          .insert([{
+            kitchen_id: activeKitchenId,
+            supplier: manualSupplier.trim(),
+            total: totalToSave,
+            invoice_date: new Date().toISOString(),
+            created_at: new Date().toISOString()
+          }])
+          .select()
+          .single();
+        if (insErr) throw insErr;
+        invoiceId = inserted.id;
+      }
+
+      const linesToInsert = validLines.map((l, idx) => {
+        const qty = parseFloat(l.qty) || 1;
+        let pricePerUnit = parseFloat(l.price_per_unit) || 0;
+        let lineTotal = parseFloat(l.line_total) || 0;
+        if (pricePerUnit === 0 && lineTotal > 0 && qty > 0) pricePerUnit = lineTotal / qty;
+        if (lineTotal === 0 && pricePerUnit > 0) lineTotal = pricePerUnit * qty;
+        return {
+          kitchen_id: activeKitchenId,
+          invoice_id: invoiceId,
+          position: idx + 1,
+          name: l.name.trim(),
+          qty: qty,
+          unit: (l.unit || "ea").trim(),
+          price_per_unit: pricePerUnit,
+          line_total: lineTotal
+        };
+      });
+
+      const { error: linesErr } = await supabase.from('invoice_lines').insert(linesToInsert);
+      if (linesErr) throw linesErr;
+
+      // Refresh local list
+      const { data: refreshed } = await supabase
+        .from('invoices')
+        .select('*')
+        .eq('kitchen_id', activeKitchenId)
+        .order('created_at', { ascending: false });
+      if (refreshed && onUpdate) onUpdate(refreshed);
+
+      window.dispatchEvent(new Event('mise-db-update'));
+      setManualOpen(false);
+      resetManualForm();
+    } catch (err) {
+      console.error("Manual invoice save failed:", err);
+      setManualError(err.message || "Save failed.");
+    } finally {
+      setManualSaving(false);
+    }
+  };
+
   return (
     <div style={S.container}>
       {/* HEADER SECTION */}
@@ -2669,7 +3064,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
           </div>
 
           {!file && !showLaptopCamera && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px 0' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 10, padding: '20px 0' }}>
               <button
                 onClick={() => !parsing && setShowOptions(true)}
                 disabled={parsing}
@@ -2689,6 +3084,24 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
                 }}
               >
                 + Scan Invoice
+              </button>
+              <button
+                onClick={() => !parsing && handleOpenManualInvoice()}
+                disabled={parsing}
+                style={{
+                  background: C.paper,
+                  color: C.ink,
+                  border: `1px solid ${C.paper2}`,
+                  borderRadius: '4px',
+                  padding: '12px 24px',
+                  fontSize: '13px',
+                  fontWeight: '700',
+                  fontFamily: "'JetBrains Mono', monospace",
+                  cursor: parsing ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                ✏️ Enter Invoice Manually
               </button>
             </div>
           )}
@@ -2762,9 +3175,25 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
             ) : (
               safeInvoices.map((inv) => (
                 <div key={inv.id} style={{ padding: '10px 12px', background: C.highlight, borderBottom: `1px solid ${C.paper2}`, marginBottom: 6, borderLeft: `3px solid ${C.accent}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 14 }}>
-                    <span>{inv.supplier}</span>
-                    <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{currentCurrency}{parseFloat(inv.total || 0).toFixed(2)}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 700, fontSize: 14, gap: 8 }}>
+                    <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>{inv.supplier}</span>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", flexShrink: 0 }}>{currentCurrency}{parseFloat(inv.total || 0).toFixed(2)}</span>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button
+                        onClick={() => handleEditInvoice(inv)}
+                        title="Edit invoice"
+                        style={{ background: 'transparent', color: C.ink, border: `1px solid ${C.paper2}`, borderRadius: 3, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={() => handleDeleteInvoice(inv)}
+                        title="Delete invoice"
+                        style={{ background: 'transparent', color: C.red, border: `1px solid ${C.red}`, borderRadius: 3, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                      >
+                        🗑
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))
@@ -2772,6 +3201,144 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
           </div>
         </div>
       </div>
+
+      {/* MANUAL INVOICE ENTRY / EDIT MODAL */}
+      {manualOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(14,14,12,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 6, width: '100%', maxWidth: 760, maxHeight: '90vh', overflowY: 'auto', padding: 18, boxShadow: '0 12px 36px rgba(0,0,0,0.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, paddingBottom: 8, borderBottom: `1px solid ${C.paper2}` }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.inkFade, letterSpacing: '0.5px', fontFamily: "'JetBrains Mono', monospace" }}>
+                  {manualEditingId ? "EDIT INVOICE" : "NEW MANUAL INVOICE"}
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>
+                  {manualEditingId ? "Update supplier, total, and line items" : "Type the invoice details directly"}
+                </div>
+              </div>
+              <button onClick={() => { setManualOpen(false); resetManualForm(); }} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>×</button>
+            </div>
+
+            {manualError && (
+              <div style={{ background: C.red, color: '#fff', padding: '8px 12px', borderRadius: 4, marginBottom: 12, fontSize: 12, fontWeight: 600 }}>
+                ⚠️ {manualError}
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: C.inkFade }}>
+                Supplier
+                <input
+                  type="text"
+                  value={manualSupplier}
+                  onChange={(e) => setManualSupplier(e.target.value)}
+                  placeholder="e.g. Wellocks Fine Foods"
+                  style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 4, marginTop: 4 }}
+                />
+              </label>
+              <label style={{ fontSize: 11, color: C.inkFade }}>
+                Invoice Total ({currentCurrency}) — optional, auto-summed from lines if blank
+                <input
+                  type="number"
+                  step="0.01"
+                  value={manualTotal}
+                  onChange={(e) => setManualTotal(e.target.value)}
+                  placeholder="0.00"
+                  style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 4, marginTop: 4 }}
+                />
+              </label>
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.inkFade, marginBottom: 6, letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+              Line items
+            </div>
+
+            {/* Column headers — matches the grid below so labels sit above their inputs */}
+            <div style={{ padding: '0 8px', display: 'grid', gridTemplateColumns: '2fr 0.7fr 0.7fr 1fr 1fr 32px', gap: 6, fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: 4 }}>
+              <div>Item Name</div>
+              <div>Qty</div>
+              <div>Unit</div>
+              <div>Unit Price ({currentCurrency})</div>
+              <div>Line Total ({currentCurrency})</div>
+              <div></div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+              {manualLines.map((row, idx) => (
+                <div key={idx} style={{ background: C.paper, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 8, display: 'grid', gridTemplateColumns: '2fr 0.7fr 0.7fr 1fr 1fr 32px', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    placeholder="Item name (e.g. Milk)"
+                    value={row.name}
+                    onChange={(e) => updateManualLine(idx, 'name', e.target.value)}
+                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Qty"
+                    value={row.qty}
+                    onChange={(e) => updateManualLine(idx, 'qty', e.target.value)}
+                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Unit"
+                    value={row.unit}
+                    onChange={(e) => updateManualLine(idx, 'unit', e.target.value)}
+                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder={`Price/unit (${currentCurrency})`}
+                    value={row.price_per_unit}
+                    onChange={(e) => updateManualLine(idx, 'price_per_unit', e.target.value)}
+                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder={`Line total (${currentCurrency})`}
+                    value={row.line_total}
+                    onChange={(e) => updateManualLine(idx, 'line_total', e.target.value)}
+                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
+                  />
+                  <button
+                    onClick={() => removeManualLine(idx)}
+                    disabled={manualLines.length === 1}
+                    title="Remove line"
+                    style={{ background: 'transparent', color: manualLines.length === 1 ? C.inkFade : C.red, border: `1px solid ${manualLines.length === 1 ? C.paper2 : C.red}`, borderRadius: 3, padding: '4px 8px', fontSize: 12, cursor: manualLines.length === 1 ? 'not-allowed' : 'pointer' }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={addManualLine}
+              style={{ background: 'transparent', color: C.ink, border: `1px dashed ${C.paper2}`, padding: '8px 12px', borderRadius: 4, fontSize: 12, cursor: 'pointer', width: '100%', marginBottom: 14 }}
+            >
+              + Add Another Line
+            </button>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: `1px solid ${C.paper2}`, paddingTop: 12 }}>
+              <button
+                onClick={() => { setManualOpen(false); resetManualForm(); }}
+                style={{ background: C.paper, color: C.ink, border: `1px solid ${C.paper2}`, padding: '10px 16px', borderRadius: 4, fontSize: 13, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveManualInvoice}
+                disabled={manualSaving}
+                style={{ background: manualSaving ? '#555' : C.accent, color: '#fff', border: 'none', padding: '10px 18px', borderRadius: 4, fontSize: 13, fontWeight: 700, cursor: manualSaving ? 'not-allowed' : 'pointer' }}
+              >
+                {manualSaving ? "💾 Saving..." : (manualEditingId ? "💾 Save Changes" : "💾 Save Invoice")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2873,6 +3440,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
   const [scannedCategory, setScannedCategory] = useState("Mains");
   const [scannedYield, setScannedYield] = useState("1 Portion");
   const [scannedSellPrice, setScannedSellPrice] = useState("18.00");
+  const [editingOriginalName, setEditingOriginalName] = useState(null); // null = adding new
 
   // --- DEVICE CAPTURE STATE (attach + take photo) ---
   const [file, setFile] = useState(null);
@@ -2898,19 +3466,16 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
 
   const activeKitchenId = kitchenId || user?.id;
 
+  // Always pull recipes straight from the database. The app-state prop
+  // can arrive in a reduced shape that drops ingredient_item, which leaves
+  // the recipe grouping with 0 rows until something forces a refetch.
   useEffect(() => {
-    if (recipes && recipes.length > 0) {
-      setRecipesList(recipes);
-      if (!selectedRecipe) {
-        setSelectedRecipe(recipes[0]);
-      } else {
-        const currentMatch = recipes.find(r => r.name === selectedRecipe.name);
-        if (currentMatch) setSelectedRecipe(currentMatch);
-      }
-    } else if (activeKitchenId) {
-      fetchRecipes();
-    }
-  }, [recipes, activeKitchenId]);
+    fetchRecipes();
+    const onDbUpdate = () => fetchRecipes();
+    window.addEventListener('mise-db-update', onDbUpdate);
+    return () => window.removeEventListener('mise-db-update', onDbUpdate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeKitchenId]);
 
   const fetchRecipes = async () => {
     if (!activeKitchenId || !supabaseClient) return;
@@ -2922,10 +3487,16 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setRecipesList(data || []);
-      if (data && data.length > 0 && !selectedRecipe) {
-        setSelectedRecipe(data[0]);
-      }
+      const rows = data || [];
+      setRecipesList(rows);
+      // Keep the previously selected recipe if it still exists, otherwise pick the first.
+      setSelectedRecipe(prev => {
+        if (prev) {
+          const match = rows.find(r => r.name === prev.name);
+          if (match) return match;
+        }
+        return rows[0] || null;
+      });
     } catch (err) {
       console.error("Error loading recipes registry:", err);
       setErrorMessage(err.message);
@@ -3098,6 +3669,82 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
   // STEP 3: SAVE VERIFIED RECIPE TO SUPABASE (recipes table)
   // One row per ingredient line — the schema Recipes & Costs reads.
   // ============================================================
+  // ============================================================
+  // MANUAL ENTRY / EDIT / DELETE
+  // ============================================================
+  const handleStartManualRecipe = () => {
+    setEditingOriginalName(null);
+    clearStagedFile();
+    setErrorMessage("");
+    setSuccessMessage("");
+    setScannedRecipeName("");
+    setScannedCategory("Mains");
+    setScannedYield("1 Portion");
+    setScannedSellPrice("18.00");
+    // A single space opens the review panel; the chef can type ingredient lines from here
+    setScannedText(" ");
+  };
+
+  const handleEditRecipe = (groupObj) => {
+    if (!groupObj) return;
+    setEditingOriginalName(groupObj.name);
+    clearStagedFile();
+    setErrorMessage("");
+    setSuccessMessage("");
+    setScannedRecipeName(groupObj.name || "");
+    setScannedCategory(groupObj.category || "Mains");
+    setScannedYield(groupObj.yield || "1 Portion");
+    setScannedSellPrice(groupObj.sell_price != null ? String(groupObj.sell_price) : "0.00");
+    setScannedText((groupObj.ingredients || []).join('\n'));
+    // Scroll the review panel into view on phones
+    if (typeof window !== 'undefined') setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 50);
+  };
+
+  const handleDeleteRecipe = async (groupObj) => {
+    if (!groupObj || !supabaseClient) return;
+    const confirmed = typeof window !== 'undefined'
+      ? window.confirm(`Delete "${groupObj.name}" and all of its ingredient rows? This cannot be undone.`)
+      : true;
+    if (!confirmed) return;
+    try {
+      const { data: deletedRows, error: delErr } = await supabaseClient
+        .from('recipes')
+        .delete()
+        .eq('kitchen_id', activeKitchenId)
+        .eq('name', groupObj.name)
+        .select();
+      if (delErr) throw delErr;
+
+      if (!deletedRows || deletedRows.length === 0) {
+        throw new Error("The database returned 0 rows deleted. This usually means a Row-Level-Security policy is blocking DELETE on the 'recipes' table for this user. Open Supabase → Authentication → Policies and add a DELETE policy that allows kitchen_id = auth.uid().");
+      }
+
+      // If we were editing the recipe we just deleted, clear the workspace
+      if (editingOriginalName === groupObj.name) {
+        setEditingOriginalName(null);
+        setScannedText("");
+        setScannedRecipeName("");
+      }
+
+      const { data: refreshed } = await supabaseClient
+        .from('recipes')
+        .select('*')
+        .eq('kitchen_id', activeKitchenId)
+        .order('created_at', { ascending: false });
+
+      if (refreshed) {
+        setRecipesList(refreshed);
+        if (typeof onUpdateRecipes === 'function') onUpdateRecipes(refreshed);
+        setSelectedRecipe(refreshed[0] || null);
+      }
+      window.dispatchEvent(new Event('mise-db-update'));
+      setSuccessMessage(`Deleted "${groupObj.name}" (${deletedRows.length} ingredient row(s) removed).`);
+    } catch (err) {
+      console.error("Delete failed:", err);
+      setErrorMessage(err.message || "Failed to delete the recipe.");
+    }
+  };
+
   const handleCommitScannedData = async () => {
     const cleanText = (scannedText || "").trim();
     if (!cleanText) {
@@ -3139,12 +3786,29 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
         created_at: new Date().toISOString()
       }));
 
+      // If editing, remove the previous version of this recipe first so it's replaced cleanly
+      if (editingOriginalName) {
+        const { data: removedRows, error: delErr } = await supabaseClient
+          .from('recipes')
+          .delete()
+          .eq('kitchen_id', activeKitchenId)
+          .eq('name', editingOriginalName)
+          .select();
+        if (delErr) throw delErr;
+        if (!removedRows || removedRows.length === 0) {
+          throw new Error("Couldn't clear the previous version of this recipe — 0 rows removed. A Row-Level-Security DELETE policy on the 'recipes' table is probably blocking this user. Save aborted to avoid creating duplicates.");
+        }
+      }
+
       const { data: committedRows, error: insertError } = await supabaseClient
         .from('recipes')
         .insert(totalInsertRows)
         .select();
 
       if (insertError) throw insertError;
+
+      const wasEditing = editingOriginalName;
+      setEditingOriginalName(null);
 
       // Reset the capture + verify workspace
       setScannedText("");
@@ -3174,7 +3838,11 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
         }
       }
 
-      setSuccessMessage(`Saved "${totalInsertRows[0].name}" (${individualLines.length} ingredient rows). It is now in the Recipes & Costs tab.`);
+      setSuccessMessage(
+        wasEditing
+          ? `Updated "${totalInsertRows[0].name}" (${individualLines.length} ingredient rows).`
+          : `Saved "${totalInsertRows[0].name}" (${individualLines.length} ingredient rows). It is now in the Recipes & Costs tab.`
+      );
     } catch (err) {
       console.error("Database save failure:", err);
       setErrorMessage(err.message || "Failed to save the recipe to the database.");
@@ -3242,19 +3910,32 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
             </div>
 
             {!previewUrl && !showLaptopCamera && (
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 10 }}>
                 <button
                   onClick={() => !busy && setShowOptions(true)}
                   disabled={busy}
                   style={{
                     background: busy ? '#333' : '#121210', color: '#fff',
-                    border: `1px solid ${C.inkRule}`, padding: '12px 28px',
+                    border: `1px solid ${C.inkRule}`, padding: '12px 24px',
                     fontWeight: '700', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace",
                     letterSpacing: '0.5px', borderRadius: '4px',
-                    cursor: busy ? 'not-allowed' : 'pointer', minWidth: '240px', textAlign: 'center'
+                    cursor: busy ? 'not-allowed' : 'pointer', minWidth: '220px', textAlign: 'center'
                   }}
                 >
                   📷 Attach or Take Photo
+                </button>
+                <button
+                  onClick={() => !busy && handleStartManualRecipe()}
+                  disabled={busy}
+                  style={{
+                    background: busy ? '#333' : C.paper, color: C.ink,
+                    border: `1px solid ${C.inkRule}`, padding: '12px 24px',
+                    fontWeight: '700', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace",
+                    letterSpacing: '0.5px', borderRadius: '4px',
+                    cursor: busy ? 'not-allowed' : 'pointer', minWidth: '220px', textAlign: 'center'
+                  }}
+                >
+                  ✏️ Enter Recipe Manually
                 </button>
               </div>
             )}
@@ -3311,7 +3992,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
           {scannedText && (
             <div style={{ background: '#1d1d1b', border: `2px solid ${C.accent}`, borderRadius: 4, padding: 16, color: '#fff' }}>
               <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', marginBottom: 12, textTransform: 'uppercase' }}>
-                ✏️ Review &amp; Adjust Extracted Recipe
+                ✏️ {editingOriginalName ? `Editing "${editingOriginalName}"` : "Review & Adjust Extracted Recipe"}
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
@@ -3352,7 +4033,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
                 disabled={busy}
                 style={{ background: busy ? '#555' : C.green, color: '#fff', border: 'none', padding: '12px 16px', borderRadius: 4, cursor: busy ? 'not-allowed' : 'pointer', fontWeight: '700', fontSize: 13, width: '100%' }}
               >
-                {saving ? "💾 SAVING..." : "💾 Confirm & Add to Library"}
+                {saving ? "💾 SAVING..." : (editingOriginalName ? "💾 Save Changes" : "💾 Confirm & Add to Library")}
               </button>
             </div>
           )}
@@ -3395,6 +4076,20 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
                       <span style={{ fontSize: 11, color: C.accent, fontWeight: 700 }}>
                         {rec.yield || '1 Portion'}
                       </span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleEditRecipe(rec); }}
+                        title="Edit recipe"
+                        style={{ background: 'transparent', color: '#fff', border: `1px solid ${C.inkRule}`, borderRadius: 3, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteRecipe(rec); }}
+                        title="Delete recipe"
+                        style={{ background: 'transparent', color: C.red, border: `1px solid ${C.red}`, borderRadius: 3, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                      >
+                        🗑
+                      </button>
                     </div>
                   </div>
                 );

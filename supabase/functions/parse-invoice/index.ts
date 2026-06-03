@@ -21,8 +21,7 @@ serve(async (req: any) => {
     const requestBody = await req.json()
     console.log("Incoming request body keys:", Object.keys(requestBody));
 
-    // Dynamically grab whatever data string was sent, regardless of the key name
-    const rawPayload = requestBody.imageBase64 || requestBody.pdfText || requestBody.textContent || Object.values(requestBody)[0];
+    const rawPayload = requestBody.image || requestBody.imageBase64 || requestBody.pdfText || requestBody.textContent || Object.values(requestBody)[0];
 
     if (!rawPayload || String(rawPayload).trim() === "") {
       throw new Error("Missing file payload data parameters. Component trace stream is empty.")
@@ -30,25 +29,36 @@ serve(async (req: any) => {
 
     const cleanPayload = String(rawPayload).trim();
 
-    // Smart Detection: Check if it's a raw text PDF dump or a base64 image string
-    // If it contains spaces, newlines, or common invoice text like "Invoice" or "Total", treat it as text.
-    const isTextPayload = cleanPayload.includes("\n") || 
-                          cleanPayload.includes(" ") || 
-                          cleanPayload.toLowerCase().includes("invoice") || 
-                          cleanPayload.toLowerCase().includes("total");
+    // Smart Detection: base64 image strings have no spaces or newlines; text dumps do.
+    const isTextPayload = cleanPayload.includes("\n") || cleanPayload.includes(" ");
 
-    let promptContentMessage = []
+    // Strict instruction with explicit price-extraction rules.
+    // The previous version of this prompt did not stress that prices are
+    // mandatory, and gpt-4o sometimes returned 0 for them. This version
+    // makes it very clear: read every visible number; never default to 0.
+    const jsonShapeInstruction =
+      "Return a valid JSON object with EXACTLY these keys:\n" +
+      "  'supplier' (string),\n" +
+      "  'total' (number - the grand total at the bottom of the invoice),\n" +
+      "  'lines' (array of objects each containing 'name' (string), 'qty' (number), 'unit' (string), 'price_per_unit' (number), and 'line_total' (number)).\n" +
+      "\n" +
+      "CRITICAL PRICE EXTRACTION RULES — read them carefully:\n" +
+      " - Invoices have a UNIT PRICE column and a LINE TOTAL column. You MUST read BOTH columns for every row.\n" +
+      " - Prices appear as numbers like '0.80', '6.50', '12.00', often preceded by a currency symbol like £, $, €, or ₱. Strip any currency symbol and return them as PLAIN NUMBERS.\n" +
+      " - For each line, line_total ≈ qty × price_per_unit. Use this as your sanity check before responding.\n" +
+      " - NEVER return 0 for price_per_unit or line_total if the invoice actually shows a price on that row. If a price is truly unreadable for some reason, return it as null (not 0).\n" +
+      " - If you can read only one of the two (e.g. you can see line_total but not unit price, or vice versa), still return both — compute the other from qty.\n" +
+      "\n" +
+      "Do not write markdown code blocks, just return raw JSON.";
+
+    let promptContentMessage: any[] = []
 
     if (isTextPayload) {
       console.log("Smart parser detected: Text/PDF document dump layout.");
       promptContentMessage = [
         {
           type: "text",
-          text: `Extract invoice matrix line details from this structural data text block:
-          
-          ${cleanPayload}
-          
-          Return a valid JSON object with EXACTLY these keys: 'supplier' (string), 'total' (number), and 'lines' (array of objects containing 'name', 'qty', 'unit', 'price_per_unit', and 'line_total'). Do not write markdown code blocks, just return raw JSON structural parameters.`
+          text: `Extract invoice details from this structural data text block:\n\n${cleanPayload}\n\n${jsonShapeInstruction}`
         }
       ]
     } else {
@@ -60,14 +70,15 @@ serve(async (req: any) => {
       cleanBase64 = cleanBase64.trim();
 
       promptContentMessage = [
-        { 
-          type: "text", 
-          text: "Extract item details from this food invoice image. Return a valid JSON object with EXACTLY these keys: 'supplier' (string), 'total' (number), and 'lines' (array of objects containing 'name', 'qty', 'unit', 'price_per_unit', and 'line_total'). Do not write markdown blocks, just return raw JSON structural parameters." 
+        {
+          type: "text",
+          text: `Extract every line item from this food supplier invoice image. ${jsonShapeInstruction}`
         },
         {
           type: "image_url",
-          image_url: { 
-            url: `data:image/jpeg;base64,${cleanBase64}` 
+          image_url: {
+            url: `data:image/jpeg;base64,${cleanBase64}`,
+            detail: "high" // ask for higher-resolution analysis to catch small price columns
           }
         }
       ]
@@ -83,17 +94,14 @@ serve(async (req: any) => {
         model: "gpt-4o",
         response_format: { type: "json_object" },
         messages: [
-          {
-            role: "user",
-            content: promptContentMessage
-          }
+          { role: "user", content: promptContentMessage }
         ],
-        temperature: 0.1
+        temperature: 0
       })
     })
 
     const aiResult = await response.json()
-    
+
     if (aiResult.error) {
       throw new Error(`OpenAI API processing fault: ${aiResult.error.message}`)
     }
@@ -103,23 +111,72 @@ serve(async (req: any) => {
       throw new Error("OpenAI was unable to extract structural data maps from this file document matrix source.")
     }
 
+    // Post-validation: if the model returned lines but all prices are zero,
+    // try one more time with an even stronger nudge, then return whatever we get.
+    let parsed: any
+    try { parsed = JSON.parse(content) } catch (_e) {
+      return new Response(content, { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } })
+    }
+
+    const lines = Array.isArray(parsed?.lines) ? parsed.lines : []
+    const allZero = lines.length > 0 && lines.every((l: any) => {
+      const p = parseFloat(String(l.price_per_unit ?? '0').replace(/[^0-9.\-]/g, '')) || 0
+      const t = parseFloat(String(l.line_total ?? '0').replace(/[^0-9.\-]/g, '')) || 0
+      return p === 0 && t === 0
+    })
+
+    if (allZero && !isTextPayload) {
+      console.log("First pass returned no prices — retrying with stronger emphasis.");
+      const retry = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text:
+                    "Look at this invoice image again. Your first reading dropped all prices. " +
+                    "The invoice has a UNIT PRICE column AND a LINE TOTAL column with money in them — " +
+                    "read every number in those two columns carefully and return them as plain numbers " +
+                    "(strip £/$/€/₱ symbols). Sanity check: line_total ≈ qty × price_per_unit. " +
+                    jsonShapeInstruction
+                },
+                promptContentMessage[1] // re-use the image part
+              ]
+            }
+          ],
+          temperature: 0
+        })
+      })
+      const retryResult = await retry.json()
+      const retryContent = retryResult?.choices?.[0]?.message?.content
+      if (retryContent) {
+        return new Response(retryContent, {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        })
+      }
+    }
+
     return new Response(content, {
       status: 200,
-      headers: { 
-        ...corsHeaders,
-        "Content-Type": "application/json"
-      },
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
     })
 
   } catch (error: any) {
     console.error("Local Runtime Edge Exception Catch Log Vector:", error?.message || error)
-    
-    return new Response(JSON.stringify({ error: error?.message || String(error) }), { 
+
+    return new Response(JSON.stringify({ error: error?.message || String(error) }), {
       status: 500,
-      headers: { 
-        ...corsHeaders,
-        "Content-Type": "application/json"
-      }
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
     })
   }
 })
