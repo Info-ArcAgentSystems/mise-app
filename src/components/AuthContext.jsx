@@ -52,6 +52,8 @@ export default function LoginScreen({ forceMode, onResetDone }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -204,14 +206,24 @@ export default function LoginScreen({ forceMode, onResetDone }) {
             {(mode === 'signin' || mode === 'signup') && (
               <label style={{ fontSize: 11, fontWeight: 700, color: C.inkFade }}>
                 Password
-                <input
-                  type="password"
-                  required
-                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  style={{ ...input, marginTop: 4 }}
-                />
+                <div style={{ position: 'relative', marginTop: 4 }}>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    style={{ ...input, paddingRight: 60 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(s => !s)}
+                    style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, color: C.accent, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, padding: '6px 8px' }}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? 'HIDE' : 'SHOW'}
+                  </button>
+                </div>
               </label>
             )}
 
@@ -219,14 +231,24 @@ export default function LoginScreen({ forceMode, onResetDone }) {
             {mode === 'reset' && (
               <label style={{ fontSize: 11, fontWeight: 700, color: C.inkFade }}>
                 New Password (min 6 characters)
-                <input
-                  type="password"
-                  required
-                  autoComplete="new-password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  style={{ ...input, marginTop: 4 }}
-                />
+                <div style={{ position: 'relative', marginTop: 4 }}>
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    required
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    style={{ ...input, paddingRight: 60 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(s => !s)}
+                    style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, color: C.accent, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, padding: '6px 8px' }}
+                    aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showNewPassword ? 'HIDE' : 'SHOW'}
+                  </button>
+                </div>
               </label>
             )}
 

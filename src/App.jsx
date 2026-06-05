@@ -45,6 +45,78 @@ export function calculateForecastConfidence(salesArray = []) {
 }
 
 // ============================================================
+// RECIPE NORMALIZATION HELPERS
+// The scanner saves one DB row per ingredient (each row carries
+// recipe_name, category, yield, sell_price + a single ingredient_item
+// string). Downstream screens (Prep, Orders, Financials) need a
+// grouped structure with parsed ingredients. These helpers do that.
+// ============================================================
+
+// Parse an ingredient line like "milk - 100 ml" / "eggs - 3" / "salt - a pinch"
+// into a structured object. Returns { name, amount, unit, raw }.
+function parseIngredientLine(raw) {
+  if (!raw) return { name: '', amount: 0, unit: '', raw: '' };
+  const text = String(raw).trim();
+  // Split on the first dash (en-dash, em-dash, or hyphen) flanked by whitespace
+  const parts = text.split(/\s+[-–—]\s+/);
+  if (parts.length < 2) {
+    return { name: text, amount: 0, unit: '', raw: text };
+  }
+  const name = parts[0].trim();
+  const rest = parts.slice(1).join(' ').trim();
+
+  // Try to extract a leading number ("100 ml", "3", "0.5 L")
+  const m = rest.match(/^([0-9]*\.?[0-9]+)\s*(.*)$/);
+  if (m) {
+    return {
+      name,
+      amount: parseFloat(m[1]) || 0,
+      unit: (m[2] || '').trim() || 'ea',
+      raw: text
+    };
+  }
+  // Non-numeric (e.g. "a pinch", "to taste")
+  return { name, amount: 0, unit: rest, raw: text };
+}
+
+// Pull a numeric yield from text like "9 portions" / "2 servings" / "24"
+function parseYield(yieldText) {
+  if (!yieldText) return 1;
+  const m = String(yieldText).match(/(\d+(?:\.\d+)?)/);
+  return m ? Math.max(1, parseFloat(m[1])) : 1;
+}
+
+// Group flat ingredient-row scanner output into one logical recipe per
+// unique recipe_name, with a structured ingredients array attached.
+function groupRecipesByName(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const byName = new Map();
+  rows.forEach(row => {
+    const name = (row.recipe_name || row.name || '').trim() || 'Untitled';
+    if (!byName.has(name)) {
+      const sellPrice = parseFloat(row.sell_price ?? row.sellPrice ?? 0) || 0;
+      byName.set(name, {
+        id: row.recipe_id || row.id, // first row's id as the recipe handle
+        recipe_id: row.recipe_id || row.id,
+        name,
+        recipe_name: name,
+        category: row.category || 'Uncategorized',
+        yield: row.yield || '1 portion',
+        yieldAmount: parseYield(row.yield),
+        sell_price: sellPrice,
+        sellPrice,
+        ingredients: []
+      });
+    }
+    const recipe = byName.get(name);
+    if (row.ingredient_item) {
+      recipe.ingredients.push(parseIngredientLine(row.ingredient_item));
+    }
+  });
+  return Array.from(byName.values());
+}
+
+// ============================================================
 // CORE AUTH GATEWAY & STATE INITIALIZATION
 // ============================================================
 export default function App() {
@@ -94,10 +166,157 @@ export default function App() {
   // Pass user profile details downstream to initialize state
   const [state, update, loaded] = useKitchenState(session?.user?.id);
 
+  // Resolve the user's active kitchen from the kitchen_members table.
+  // Falls back to user.id for users who haven't been migrated yet
+  // (e.g. if the SQL migration hasn't been run yet) so the app still works.
+  const [activeKitchenId, setActiveKitchenId] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const loadMembership = async () => {
+      if (!session?.user?.id) { setActiveKitchenId(null); return; }
+      try {
+        const { data, error } = await supabase
+          .from('kitchen_members')
+          .select('kitchen_id')
+          .eq('user_id', session.user.id)
+          .maybeSingle();
+        if (cancelled) return;
+        if (error || !data) {
+          // Table missing or no row yet — fall back to user.id
+          setActiveKitchenId(session.user.id);
+        } else {
+          setActiveKitchenId(data.kitchen_id);
+        }
+      } catch {
+        if (!cancelled) setActiveKitchenId(session?.user?.id || null);
+      }
+    };
+    loadMembership();
+    const onDbUpdate = () => loadMembership();
+    window.addEventListener('mise-kitchen-change', onDbUpdate);
+    return () => { cancelled = true; window.removeEventListener('mise-kitchen-change', onDbUpdate); };
+  }, [session?.user?.id]);
+
   // Live calculation of kitchen forecast confidence based on database metrics
   const forecastMetrics = React.useMemo(() => {
     return calculateForecastConfidence(state?.sales || []);
   }, [state?.sales]);
+
+  // ─────────────────────────────────────────────────────────────
+  // Supabase-backed planner. Declared HERE — above every early
+  // return in this component — so React's Rules of Hooks are
+  // honoured (hook count must be identical on every render, even
+  // before the user signs in).
+  // Falls back to the localStorage planner if the planner_days
+  // table hasn't been migrated yet, so the app still works.
+  // ─────────────────────────────────────────────────────────────
+  const DEFAULT_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const [dbPlanner, setDbPlanner] = useState(null); // null = not yet loaded
+  const [plannerTableReady, setPlannerTableReady] = useState(true);
+
+  // DB-direct recipes — useKitchenState's prop arrives "in a reduced shape
+  // that drops ingredient_item" (per the RecipesScreen comment), so any
+  // downstream tab that needs full ingredient data (Prep Sheets, Orders &
+  // Lists, Financial Matrix) has to read the recipes table itself.
+  const [dbRecipes, setDbRecipes] = useState([]);
+  useEffect(() => {
+    if (!activeKitchenId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('recipes')
+          .select('*')
+          .eq('kitchen_id', activeKitchenId);
+        if (cancelled) return;
+        if (!error && Array.isArray(data)) setDbRecipes(data);
+      } catch (err) {
+        console.error("Recipes load failed:", err);
+      }
+    };
+    load();
+    const onDbUpdate = () => load();
+    window.addEventListener('mise-db-update', onDbUpdate);
+    return () => { cancelled = true; window.removeEventListener('mise-db-update', onDbUpdate); };
+  }, [activeKitchenId]);
+
+
+  useEffect(() => {
+    if (!activeKitchenId) return;
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('planner_days')
+          .select('*')
+          .eq('kitchen_id', activeKitchenId)
+          .order('day_order', { ascending: true });
+
+        if (cancelled) return;
+
+        if (error) {
+          // Likely table doesn't exist yet — fall back to localStorage planner
+          if (error.code === '42P01' || /relation .* does not exist/i.test(error.message || '')) {
+            setPlannerTableReady(false);
+          } else {
+            console.error("Planner load error:", error);
+          }
+          return;
+        }
+
+        setPlannerTableReady(true);
+
+        const byDay = new Map((data || []).map(r => [r.day, r]));
+        const merged = DEFAULT_DAYS.map((day) => {
+          const row = byDay.get(day);
+          return {
+            day,
+            lunch: row ? Number(row.lunch) || 0 : 0,
+            dinner: row ? Number(row.dinner) || 0 : 0
+          };
+        });
+        setDbPlanner(merged);
+      } catch (err) {
+        console.error("Planner load failed:", err);
+      }
+    };
+
+    load();
+    const onDbUpdate = () => load();
+    window.addEventListener('mise-db-update', onDbUpdate);
+    return () => { cancelled = true; window.removeEventListener('mise-db-update', onDbUpdate); };
+  }, [activeKitchenId]);
+
+  const handlePlannerUpdate = async (newPlanner) => {
+    setDbPlanner(newPlanner);
+
+    if (!plannerTableReady) {
+      update({ planner: newPlanner });
+      return;
+    }
+    if (!activeKitchenId) return;
+
+    try {
+      const payload = newPlanner.map((d, idx) => ({
+        kitchen_id: activeKitchenId,
+        day: d.day,
+        day_order: idx,
+        lunch: parseInt(d.lunch) || 0,
+        dinner: parseInt(d.dinner) || 0,
+        updated_at: new Date().toISOString(),
+        updated_by: session?.user?.id || null
+      }));
+      const { error } = await supabase
+        .from('planner_days')
+        .upsert(payload, { onConflict: 'kitchen_id,day' });
+      if (error) throw error;
+      window.dispatchEvent(new Event('mise-db-update'));
+    } catch (err) {
+      console.error("Planner save failed:", err);
+      alert("Could not save planner: " + (err.message || err));
+    }
+  };
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -134,7 +353,7 @@ export default function App() {
   const {
   recipes = [],
   components = [],
-  planner = [],
+  planner: localPlanner = [],
   sales = [],
   waste = [],
   invoices = [],
@@ -145,6 +364,14 @@ export default function App() {
 const settings = customSettings && Object.keys(customSettings).length > 0 
   ? customSettings 
   : { role: 'Head chef', currency: '£', unitSystem: 'metric', region: 'UK' };
+
+// What downstream screens actually use:
+const planner = plannerTableReady && dbPlanner ? dbPlanner : (Array.isArray(localPlanner) && localPlanner.length > 0 ? localPlanner : DEFAULT_DAYS.map(d => ({ day: d, lunch: 0, dinner: 0 })));
+
+// Group flat ingredient-row recipes into one logical recipe each.
+// Prefer DB rows (full ingredient_item shape) over the localStorage
+// prop (which arrives in a reduced shape that drops ingredient_item).
+const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : recipes);
 
   const tabs = ['dashboard', 'servicereport', 'scan', 'archive', 'digitizer', 'recipes', 'planner', 'prep', 'sales', 'waste', 'intel', 'shopping', 'engineering', 'sous', 'settings'];
 
@@ -198,6 +425,7 @@ const settings = customSettings && Object.keys(customSettings).length > 0
         { id: 'sous', label: 'Sous AI Coach', sub: 'Core conversational prompt engine' },
         { id: 'suppliers', label: 'Market Intel', sub: 'Ingredient supplier benchmarking' },
         { id: 'pos', label: 'POS Sync Gateway', sub: 'Automated live machine extraction' },
+        { id: 'team', label: 'Kitchen Team', sub: 'Shared access and members' },
         { id: 'settings', label: 'Station Settings', sub: 'System region configurations' }
       ]
     }
@@ -374,11 +602,11 @@ const settings = customSettings && Object.keys(customSettings).length > 0
       <div style={S.main}>
         {tab === 'dashboard' && <Dashboard recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
         {tab === 'servicereport' && <ServiceReport recipes={recipes || []} components={components || []} sales={sales || []} waste={waste || []} planner={planner || []} settings={settings || {}} />}
-        {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={(val) => update({ planner: val })} />}
+        {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={handlePlannerUpdate} />}
         {/* FIX: Wired invoices state array downstream so matching costs align instantly */}
 {tab === 'recipes' && (
   <RecipesScreen 
-    kitchenId={state?.kitchen?.id || session?.user?.id || ""}
+    kitchenId={activeKitchenId || session?.user?.id || ""}
     recipes={recipes || []} 
     invoices={invoices || []} 
     components={components || []} 
@@ -387,20 +615,21 @@ const settings = customSettings && Object.keys(customSettings).length > 0
     onUpdateComponents={(val) => update({ components: val })} 
   />
 )}
-        {tab === 'prep' && <PrepScreen planner={planner} recipes={recipes} components={components} />}
-        {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={recipes} components={components} />}
+        {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={components} />}
+        {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={groupedRecipes} components={components} />}
         {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
         {tab === 'waste' && <WasteScreen waste={waste} onUpdate={(val) => update({ waste: val })} settings={settings} />}
-        {tab === 'performance' && <PerformanceScreen recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} />}
+        {tab === 'performance' && <PerformanceScreen recipes={groupedRecipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} />}
         {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={components} sales={sales} waste={waste} planner={planner} />}
-        {tab === 'invoices' && <InvoicesScreen supabase={supabase} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
-        {tab === 'suppliers' && <SuppliersScreen />}
+        {tab === 'invoices' && <InvoicesScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id || ""} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
+        {tab === 'suppliers' && <SuppliersScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id} settings={settings} />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
         {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} />}
+        {tab === 'team' && <TeamScreen supabase={supabase} session={session} activeKitchenId={activeKitchenId} />}
         {/* THIS ENSURES IT CALLS RECIPEDIGITIZER WITH THE CORRECT SESSION CONTEXT */}
         {tab === 'scan' && (
           <RecipeDigitizer
-            kitchenId={state?.kitchen?.id || session?.user?.id || ""}
+            kitchenId={activeKitchenId || session?.user?.id || ""}
             recipes={recipes || []}
             onUpdateRecipes={(val) => update({ recipes: val })}
           />
@@ -413,6 +642,223 @@ const settings = customSettings && Object.keys(customSettings).length > 0
 // ============================================================
 // COMPREHENSIVE RE-ANCHOR: STATE SYNCHRONIZATION FOR DROPDOWNS
 // ============================================================
+// ============================================================
+// TEAM SCREEN — Kitchen sharing v1
+// Shows the user's kitchen code, lets them invite by sharing it,
+// join another kitchen by pasting one, and lists current members.
+// ============================================================
+function TeamScreen({ supabase, session, activeKitchenId }) {
+  const [members, setMembers] = useState([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [joinInput, setJoinInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [info, setInfo] = useState('');
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  const userId = session?.user?.id;
+  const userEmail = session?.user?.email || '';
+  const myOwnKitchen = activeKitchenId === userId;
+
+  const loadMembers = async () => {
+    if (!activeKitchenId) return;
+    setLoadingMembers(true);
+    try {
+      const { data, error } = await supabase
+        .from('kitchen_members')
+        .select('user_id, joined_at, role')
+        .eq('kitchen_id', activeKitchenId);
+      if (error) throw error;
+      setMembers(data || []);
+    } catch (err) {
+      console.error("Couldn't load members:", err);
+      setError(err.message || String(err));
+    } finally {
+      setLoadingMembers(false);
+    }
+  };
+
+  useEffect(() => { loadMembers(); }, [activeKitchenId]);
+
+  const copyKitchenCode = async () => {
+    try {
+      await navigator.clipboard.writeText(activeKitchenId || '');
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // older browsers: select & rely on user
+    }
+  };
+
+  const handleJoin = async () => {
+    setError(''); setInfo('');
+    const target = (joinInput || '').trim().toLowerCase();
+    if (!target) { setError("Paste a kitchen code to join."); return; }
+    // Basic UUID shape check
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target)) {
+      setError("That doesn't look like a kitchen code. Codes look like e.g. eb73e6cd-d496-4566-9277-48cf3eb8f94f.");
+      return;
+    }
+    if (target === activeKitchenId) {
+      setError("You're already in that kitchen.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { error } = await supabase
+        .from('kitchen_members')
+        .upsert({ user_id: userId, kitchen_id: target, role: 'member' }, { onConflict: 'user_id' });
+      if (error) throw error;
+      setInfo("Joined! Refreshing your kitchen view…");
+      setJoinInput('');
+      // Tell App to re-resolve activeKitchenId; broadcast a refresh signal
+      window.dispatchEvent(new Event('mise-kitchen-change'));
+      window.dispatchEvent(new Event('mise-db-update'));
+    } catch (err) {
+      console.error("Join failed:", err);
+      setError(err.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleReturnToMyKitchen = async () => {
+    if (!userId) return;
+    setError(''); setInfo('');
+    setBusy(true);
+    try {
+      const { error } = await supabase
+        .from('kitchen_members')
+        .upsert({ user_id: userId, kitchen_id: userId, role: 'member' }, { onConflict: 'user_id' });
+      if (error) throw error;
+      setInfo("Switched back to your own kitchen.");
+      window.dispatchEvent(new Event('mise-kitchen-change'));
+      window.dispatchEvent(new Event('mise-db-update'));
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 24, marginBottom: 4 }}>Kitchen Team</h2>
+        <div style={{ fontSize: 13, color: C.inkFade }}>Share a kitchen so multiple people can edit the same recipes and invoices.</div>
+        <div style={{ borderBottom: `1px solid ${C.inkRule}`, marginTop: 14 }}></div>
+      </div>
+
+      {error && (
+        <div style={{ background: C.red, color: '#fff', padding: '10px 14px', borderRadius: 4, marginBottom: 14, fontSize: 13, fontWeight: 600 }}>
+          ⚠️ {error}
+        </div>
+      )}
+      {info && (
+        <div style={{ background: '#4a6b3a', color: '#fff', padding: '10px 14px', borderRadius: 4, marginBottom: 14, fontSize: 13, fontWeight: 600 }}>
+          ✓ {info}
+        </div>
+      )}
+
+      {/* CURRENT KITCHEN — share or leave */}
+      <div style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 6, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+          Your Active Kitchen
+        </div>
+        <div style={{ fontSize: 14, color: C.inkFade, marginBottom: 12 }}>
+          {myOwnKitchen
+            ? "You're working in your own kitchen. Share the code below to let someone join."
+            : "You're a guest in someone else's kitchen. Their data is yours to view and edit."}
+        </div>
+
+        <div style={{ background: C.paper, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <code style={{ flex: 1, minWidth: 0, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: C.ink, wordBreak: 'break-all' }}>
+            {activeKitchenId || '—'}
+          </code>
+          <button
+            onClick={copyKitchenCode}
+            style={{ background: C.accent, color: '#fff', border: 'none', padding: '6px 12px', borderRadius: 3, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+          >
+            {copied ? '✓ Copied' : 'Copy Code'}
+          </button>
+        </div>
+
+        {!myOwnKitchen && (
+          <button
+            onClick={handleReturnToMyKitchen}
+            disabled={busy}
+            style={{ background: 'transparent', color: C.ink, border: `1px solid ${C.paper2}`, padding: '8px 14px', borderRadius: 4, fontSize: 12, cursor: busy ? 'not-allowed' : 'pointer' }}
+          >
+            ← Return to my own kitchen
+          </button>
+        )}
+      </div>
+
+      {/* JOIN ANOTHER KITCHEN */}
+      <div style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 6, padding: 16, marginBottom: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+          Join a Different Kitchen
+        </div>
+        <div style={{ fontSize: 13, color: C.inkFade, marginBottom: 12 }}>
+          Paste the kitchen code shared with you. You'll switch to that kitchen — your own data stays safe, you can always return.
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input
+            type="text"
+            placeholder="e.g. eb73e6cd-d496-4566-9277-48cf3eb8f94f"
+            value={joinInput}
+            onChange={(e) => setJoinInput(e.target.value)}
+            style={{ flex: 1, minWidth: 240, padding: 10, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 4, fontFamily: "'JetBrains Mono', monospace" }}
+          />
+          <button
+            onClick={handleJoin}
+            disabled={busy}
+            style={{ background: C.accent, color: '#fff', border: 'none', padding: '10px 18px', borderRadius: 4, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}
+          >
+            {busy ? 'Working…' : 'Join Kitchen'}
+          </button>
+        </div>
+      </div>
+
+      {/* MEMBERS */}
+      <div style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 6, padding: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+          Members of this Kitchen ({members.length})
+        </div>
+        {loadingMembers ? (
+          <div style={{ color: C.inkFade, fontSize: 13 }}>Loading…</div>
+        ) : members.length === 0 ? (
+          <div style={{ color: C.inkFade, fontSize: 13 }}>No members yet.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {members.map((m) => {
+              const isMe = m.user_id === userId;
+              const isOwner = m.user_id === activeKitchenId;
+              return (
+                <div key={m.user_id} style={{ background: C.paper, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
+                      {isMe ? `You (${userEmail})` : m.user_id}
+                    </div>
+                    <div style={{ fontSize: 11, color: C.inkFade, marginTop: 2 }}>
+                      Joined {m.joined_at ? new Date(m.joined_at).toLocaleDateString() : '—'}
+                      {isOwner && <span style={{ marginLeft: 8, padding: '1px 6px', background: C.accent, color: '#fff', borderRadius: 3, fontWeight: 700, fontSize: 10 }}>OWNER</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 14, fontSize: 11, color: C.inkFade, fontStyle: 'italic' }}>
+        All members can view and edit everything in the kitchen. Edit attribution (who changed what) is captured on every save.
+      </div>
+    </div>
+  );
+}
+
 function SettingsScreen({ settings, onUpdate }) {
   // Exhaustive mapping of globally active operational regions and currencies
   const regions = [
@@ -569,29 +1015,55 @@ function SettingsScreen({ settings, onUpdate }) {
   ];
 
   const timezones = [
-    { value: 'Africa/Cairo', label: 'Africa/Cairo (EET)' },
-    { value: 'Africa/Johannesburg', label: 'Africa/Johannesburg (SAST)' },
-    { value: 'Africa/Lagos', label: 'Africa/Lagos (WAT)' },
-    { value: 'Africa/Nairobi', label: 'Africa/Nairobi (EAT)' },
-    { value: 'America/Anchorage', label: 'America/Anchorage (AKST/AKDT)' },
-    { value: 'America/Argentina/Buenos_Aires', label: 'America/Buenos Aires (ART)' },
-    { value: 'America/Bogota', label: 'America/Bogota (COT)' },
-    { value: 'America/Chicago', label: 'America/Chicago (CST/CDT)' },
-    { value: 'America/Denver', label: 'America/Denver (MST/MDT)' },
-    { value: 'America/Los_Angeles', label: 'America/Los Angeles (PST/PDT)' },
-    { value: 'America/Mexico_City', label: 'America/Mexico City (CST)' },
-    { value: 'America/New_York', label: 'America/New York (EST/EDT)' },
-    { value: 'America/Phoenix', label: 'America/Phoenix (MST)' },
-    { value: 'America/Sao_Paulo', label: 'America/Sao Paulo (BRT)' },
-    { value: 'America/Toronto', label: 'America/Toronto (EST/EDT)' },
-    { value: 'America/Vancouver', label: 'America/Vancouver (PST/PDT)' },
-    { value: 'Asia/Bangkok', label: 'Asia/Bangkok (ICT)' },
-    { value: 'Asia/Dubai', label: 'Asia/Dubai (GST)' },
-    { value: 'Asia/Hong_Kong', label: 'Asia/Hong Kong (HKT)' },
-    { value: 'Asia/Jakarta', label: 'Asia/Jakarta (WIB)' },
-    { value: 'Asia/Jerusalem', label: 'Asia/Jerusalem (IST)' },
-    { value: 'Asia/Kolkata', label: 'Asia/Kolkata (IST)' }
+    { value: 'UTC',                                label: 'UTC / GMT' },
+    { value: 'Africa/Cairo',                       label: 'Africa/Cairo (EET)' },
+    { value: 'Africa/Johannesburg',                label: 'Africa/Johannesburg (SAST)' },
+    { value: 'Africa/Lagos',                       label: 'Africa/Lagos (WAT)' },
+    { value: 'Africa/Nairobi',                     label: 'Africa/Nairobi (EAT)' },
+    { value: 'America/Anchorage',                  label: 'America/Anchorage (AKST/AKDT)' },
+    { value: 'America/Argentina/Buenos_Aires',     label: 'America/Buenos Aires (ART)' },
+    { value: 'America/Bogota',                     label: 'America/Bogota (COT)' },
+    { value: 'America/Chicago',                    label: 'America/Chicago (CST/CDT)' },
+    { value: 'America/Denver',                     label: 'America/Denver (MST/MDT)' },
+    { value: 'America/Los_Angeles',                label: 'America/Los Angeles (PST/PDT)' },
+    { value: 'America/Mexico_City',                label: 'America/Mexico City (CST)' },
+    { value: 'America/New_York',                   label: 'America/New York (EST/EDT)' },
+    { value: 'America/Phoenix',                    label: 'America/Phoenix (MST)' },
+    { value: 'America/Sao_Paulo',                  label: 'America/Sao Paulo (BRT)' },
+    { value: 'America/Toronto',                    label: 'America/Toronto (EST/EDT)' },
+    { value: 'America/Vancouver',                  label: 'America/Vancouver (PST/PDT)' },
+    { value: 'Asia/Bangkok',                       label: 'Asia/Bangkok (ICT)' },
+    { value: 'Asia/Dubai',                         label: 'Asia/Dubai (GST)' },
+    { value: 'Asia/Hong_Kong',                     label: 'Asia/Hong Kong (HKT)' },
+    { value: 'Asia/Jakarta',                       label: 'Asia/Jakarta (WIB)' },
+    { value: 'Asia/Jerusalem',                     label: 'Asia/Jerusalem (IST)' },
+    { value: 'Asia/Kolkata',                       label: 'Asia/Kolkata (IST)' },
+    { value: 'Asia/Manila',                        label: 'Asia/Manila (PHT)' },
+    { value: 'Asia/Singapore',                     label: 'Asia/Singapore (SGT)' },
+    { value: 'Asia/Seoul',                         label: 'Asia/Seoul (KST)' },
+    { value: 'Asia/Shanghai',                      label: 'Asia/Shanghai (CST)' },
+    { value: 'Asia/Tokyo',                         label: 'Asia/Tokyo (JST)' },
+    { value: 'Australia/Sydney',                   label: 'Australia/Sydney (AEST/AEDT)' },
+    { value: 'Australia/Melbourne',                label: 'Australia/Melbourne (AEST/AEDT)' },
+    { value: 'Australia/Perth',                    label: 'Australia/Perth (AWST)' },
+    { value: 'Europe/Amsterdam',                   label: 'Europe/Amsterdam (CET/CEST)' },
+    { value: 'Europe/Berlin',                      label: 'Europe/Berlin (CET/CEST)' },
+    { value: 'Europe/Dublin',                      label: 'Europe/Dublin (GMT/IST)' },
+    { value: 'Europe/Lisbon',                      label: 'Europe/Lisbon (WET/WEST)' },
+    { value: 'Europe/London',                      label: 'Europe/London (GMT/BST)' },
+    { value: 'Europe/Madrid',                      label: 'Europe/Madrid (CET/CEST)' },
+    { value: 'Europe/Paris',                       label: 'Europe/Paris (CET/CEST)' },
+    { value: 'Europe/Rome',                        label: 'Europe/Rome (CET/CEST)' },
+    { value: 'Europe/Stockholm',                   label: 'Europe/Stockholm (CET/CEST)' },
+    { value: 'Pacific/Auckland',                   label: 'Pacific/Auckland (NZST/NZDT)' },
+    { value: 'Pacific/Honolulu',                   label: 'Pacific/Honolulu (HST)' },
   ];
+
+  // Auto-detect the browser timezone — used as the default when no value is set yet
+  const browserTimezone = (() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London'; }
+    catch { return 'Europe/London'; }
+  })();
 
 // 1. Initialize state safely by checking for an explicit region fallback string
   const [localSettings, setLocalSettings] = React.useState(() => {
@@ -600,7 +1072,7 @@ function SettingsScreen({ settings, onUpdate }) {
       region: settings?.region || "UK", // Rely on explicit region keys
       currency: settings?.currency || "£",
       unitSystem: settings?.unitSystem || "metric",
-      timezone: settings?.timezone || "Europe/London"
+      timezone: settings?.timezone || browserTimezone
     };
   });
   
@@ -626,7 +1098,7 @@ function SettingsScreen({ settings, onUpdate }) {
         region: derivedRegion,
         currency: settings.currency || "£",
         unitSystem: settings.unitSystem || "metric",
-        timezone: settings.timezone || "Europe/London"
+        timezone: settings.timezone || browserTimezone
       });
     }
   }, [settings]);
@@ -1523,18 +1995,18 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
               <div style={{ fontSize: 11, fontWeight: 800, color: '#3a3530', textTransform: 'uppercase', marginBottom: 10 }}>
                 Adjust Recipe Retail Base
               </div>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <div style={{ position: 'relative', flex: 1 }}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'stretch', flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', flex: '1 1 200px', minWidth: 160 }}>
                   <span style={{ position: 'absolute', left: 10, top: 10, fontSize: 13, color: '#aaa' }}>{currencySymbol}</span>
                   <input 
                     type="number" 
                     step="0.01" 
                     value={editSellPrice} 
                     onChange={(e) => setEditSellPrice(e.target.value)} 
-                    style={{ width: '100%', background: '#000', color: '#fff', border: '1px solid #333', padding: '8px 8px 8px 24px', borderRadius: 4, fontSize: 13, fontFamily: 'monospace' }} 
+                    style={{ width: '100%', boxSizing: 'border-box', background: '#000', color: '#fff', border: '1px solid #333', padding: '8px 8px 8px 24px', borderRadius: 4, fontSize: 13, fontFamily: 'monospace' }} 
                   />
                 </div>
-                <button type="submit" disabled={updating} style={{ background: paletteColors.accent, color: '#fff', border: 'none', padding: '9px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
+                <button type="submit" disabled={updating} style={{ background: paletteColors.accent, color: '#fff', border: 'none', padding: '9px 16px', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', flex: '0 0 auto' }}>
                   {updating ? "RE-INDEXING..." : "Save Selling Price"}
                 </button>
               </div>
@@ -1988,7 +2460,19 @@ function PrepScreen({ planner = [], recipes = [], components = [] }) {
 
       {totalWeeklyCovers === 0 ? (
         <div style={{ padding: 30, background: C.highlight, borderRadius: 4, textAlign: 'center', border: `1px dashed ${C.inkFade}` }}>
-          <p style={{ fontSize: 14, color: C.inkSoft, fontWeight: 600 }}>Your Weekly Planner cover headcount is currently flat.</p>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+          <p style={{ fontSize: 15, color: C.ink, fontWeight: 700, marginBottom: 6 }}>No production tasks yet</p>
+          <p style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, maxWidth: 500, margin: '0 auto' }}>
+            Prep Sheets scale each recipe against your planned covers. Open <strong>Weekly Planner</strong> and enter how many lunch and dinner covers you're expecting each day. Tasks will appear here automatically grouped by phase (Advance / Day Before / Same Day / Pre-Service).
+          </p>
+        </div>
+      ) : (phasedTasks.advance.length + phasedTasks.dayBefore.length + phasedTasks.sameDay.length + phasedTasks.service.length) === 0 ? (
+        <div style={{ padding: 30, background: C.highlight, borderRadius: 4, textAlign: 'center', border: `1px dashed ${C.inkFade}` }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+          <p style={{ fontSize: 15, color: C.ink, fontWeight: 700, marginBottom: 6 }}>No tasks could be generated</p>
+          <p style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, maxWidth: 540, margin: '0 auto' }}>
+            Planner is set ({totalWeeklyCovers} covers) but no recipes were found to scale against. Add at least one recipe via <strong>Recipe Digitizer</strong>, then return here.
+          </p>
         </div>
       ) : totalRemaining === 0 ? (
         <div style={{ padding: 40, background: C.highlight, borderRadius: 4, textAlign: 'center', border: `1px dashed ${C.green}` }}>
@@ -2165,7 +2649,15 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
         )}
       </div>
 
-      {activeOrders.length === 0 ? (
+      {orderList.length === 0 ? (
+        <div style={{ padding: 30, background: C.highlight, borderRadius: 4, textAlign: 'center', border: `1px dashed ${C.inkFade}` }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🛒</div>
+          <p style={{ fontSize: 15, color: C.ink, fontWeight: 700, marginBottom: 6 }}>No order list yet</p>
+          <p style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, maxWidth: 540, margin: '0 auto' }}>
+            Orders & Lists builds a shopping list by scaling each recipe's ingredients against your planned covers. To populate it, open <strong>Weekly Planner</strong> and enter lunch/dinner covers per day. Quantities then explode across all your recipes and dedupe by ingredient name.
+          </p>
+        </div>
+      ) : activeOrders.length === 0 ? (
         <div style={{ padding: 40, background: C.highlight, borderRadius: 4, textAlign: 'center', border: `1px dashed ${C.green}` }}>
           <p style={{ fontSize: 16, color: C.green, fontWeight: 700 }}>🎉 All stations fully provisioned!</p>
           <p style={{ fontSize: 12, color: C.inkFade, marginTop: 4 }}>Every item calculation has been permanently checked off in your team ledger.</p>
@@ -2224,31 +2716,142 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
 
 function SalesScreen({ recipes = [], sales = [], onUpdate, settings }) {
   const currencySymbol = settings?.currency || '£';
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  if (isMobile) {
+    return (
+      <div style={S.container}>
+        <ScreenHeader title="Sales Ledger Registers" sub="Correlate point of sale deployment figures with physical matrix recipes" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {sales.length === 0 && (
+            <div style={{ background: C.highlight, borderRadius: 4, padding: 20, textAlign: 'center', border: `1px dashed ${C.inkFade}` }}>
+              <div style={{ fontSize: 28, marginBottom: 6 }}>📊</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 4 }}>No sales recorded yet</div>
+              <div style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.5 }}>
+                Open <strong>POS Sync Gateway</strong> and tap Sync on any provider to inject 6 test sales records, or add sales manually here once rows appear.
+              </div>
+            </div>
+          )}
+          {sales.map((s, idx) => {
+            const recipe = recipes.find(r => r.id === s.recipeId);
+            return (
+              <div key={idx} style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 13 }}>{s.day}</span>
+                  <span style={{ fontSize: 12, color: C.inkFade, textTransform: 'uppercase' }}>{s.session}</span>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 10 }}>
+                  {recipe ? recipe.name : 'Unmapped Item'}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Quantity Cleared</label>
+                  <div style={{ width: 100 }}>
+                    <NumInput value={s.sold} onChange={(val) => {
+                      const next = [...sales];
+                      next[idx] = { ...next[idx], sold: parseInt(val) || 0 };
+                      onUpdate(next);
+                    }} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <SalesLedgerView sales={sales} recipes={recipes} onUpdate={onUpdate} />
+  );
+}
+
+function SalesLedgerView({ sales, recipes, onUpdate }) {
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  if (isMobile) {
+    // Card layout — every row stacks cleanly inside the viewport
+    return (
+      <div style={S.container}>
+        <ScreenHeader title="Sales Ledger Registers" sub="Correlate point of sale deployment figures with physical matrix recipes" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {sales.length === 0 ? (
+            <div style={{ ...S.card, color: C.inkFade, fontSize: 13 }}>No sales recorded yet.</div>
+          ) : sales.map((s, idx) => {
+            const recipe = recipes.find(r => r.id === s.recipeId);
+            return (
+              <div key={idx} style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: C.ink }}>
+                    {s.day} · {s.session}
+                  </div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 8, wordBreak: 'break-word' }}>
+                  {recipe ? recipe.name : 'Unmapped Item'}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                  <label style={{ fontSize: 11, color: C.inkFade, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase' }}>Quantity Cleared</label>
+                  <input
+                    type="number"
+                    value={s.sold}
+                    onChange={(e) => {
+                      const next = [...sales];
+                      next[idx] = { ...next[idx], sold: parseInt(e.target.value) || 0 };
+                      onUpdate(next);
+                    }}
+                    style={{ width: 90, padding: '8px 10px', fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, border: `1px solid ${C.paper2}`, borderRadius: 4, textAlign: 'right' }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // Desktop / tablet table
   return (
     <div style={S.container}>
       <ScreenHeader title="Sales Ledger Registers" sub="Correlate point of sale deployment figures with physical matrix recipes" />
-      <div style={S.card}>
-        <table style={{width:"100%", borderCollapse:"collapse", textAlign:"left"}}>
+      {sales.length === 0 ? (
+        <div style={{ padding: 30, background: C.highlight, borderRadius: 4, textAlign: 'center', border: `1px dashed ${C.inkFade}` }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>📊</div>
+          <p style={{ fontSize: 15, color: C.ink, fontWeight: 700, marginBottom: 6 }}>No sales recorded yet</p>
+          <p style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, maxWidth: 540, margin: '0 auto' }}>
+            Sales feed into both this screen and Financial Matrix (revenue). Open <strong>POS Sync Gateway</strong> and tap Sync on any provider to drop in 6 test records, or add sales manually here once rows are present.
+          </p>
+        </div>
+      ) : (
+      <div style={{ ...S.card, overflowX: 'auto' }}>
+        <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse", textAlign: "left" }}>
           <thead>
-            <tr style={{borderBottom:`1px solid ${C.inkRule}`}}>
-              <th style={{padding:10}}><SectionLabel label="Day Block" /></th>
-              <th style={{padding:10}}><SectionLabel label="Session" /></th>
-              <th style={{padding:10}}><SectionLabel label="Recipe Mapping" /></th>
-              <th style={{padding:10}}><SectionLabel label="Quantity Cleared" /></th>
+            <tr style={{ borderBottom: `1px solid ${C.inkRule}` }}>
+              <th style={{ padding: 10 }}><SectionLabel label="Day Block" /></th>
+              <th style={{ padding: 10 }}><SectionLabel label="Session" /></th>
+              <th style={{ padding: 10 }}><SectionLabel label="Recipe Mapping" /></th>
+              <th style={{ padding: 10 }}><SectionLabel label="Quantity Cleared" /></th>
             </tr>
           </thead>
           <tbody>
             {sales.map((s, idx) => {
-              const r = recipes.find(x => x.id === s.recipeId);
-              const itemPrice = r ? (r.sellPrice || 0) : 0;
-              const itemRevenue = s.sold * itemPrice;
               const recipe = recipes.find(r => r.id === s.recipeId);
               return (
-                <tr key={idx} style={{borderBottom:`1px solid ${C.paper2}`}}>
-                  <td style={{padding:12, fontFamily:"'JetBrains Mono', monospace", fontWeight:700}}>{s.day}</td>
-                  <td style={{padding:12}}>{s.session}</td>
-                  <td style={{padding:12, fontWeight:700}}>{recipe ? recipe.name : 'Unmapped Item'}</td>
-                  <td style={{padding:12}}>
+                <tr key={idx} style={{ borderBottom: `1px solid ${C.paper2}` }}>
+                  <td style={{ padding: 12, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{s.day}</td>
+                  <td style={{ padding: 12 }}>{s.session}</td>
+                  <td style={{ padding: 12, fontWeight: 700 }}>{recipe ? recipe.name : 'Unmapped Item'}</td>
+                  <td style={{ padding: 12 }}>
                     <NumInput value={s.sold} onChange={(val) => {
                       const next = [...sales];
                       next[idx] = { ...next[idx], sold: parseInt(val) || 0 };
@@ -2261,6 +2864,7 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings }) {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }
@@ -2482,11 +3086,15 @@ function PerformanceScreen({ recipes = [], components = [], planner = [], sales 
   const report = useMemo(() => {
     let rawRevenue = 0;
     let computedCost = 0;
+    let matchedSales = 0;
 
     sales.forEach(s => {
       const r = recipes.find(x => x.id === s.recipeId);
       if (r) {
-        rawRevenue += (s.sold * (r.sellPrice || 0));
+        matchedSales++;
+        // DB column is sell_price (snake_case); fall back to legacy camelCase if present
+        const sellPrice = parseFloat(r.sell_price ?? r.sellPrice ?? 0) || 0;
+        rawRevenue += (s.sold * sellPrice);
         const { foodCost } = recipeCosting(r, components);
         computedCost += (s.sold * foodCost);
       }
@@ -2496,7 +3104,11 @@ function PerformanceScreen({ recipes = [], components = [], planner = [], sales 
     const profitMargin = rawRevenue - computedCost - leakCost;
     const finalEfficiencyPct = rawRevenue > 0 ? (profitMargin / rawRevenue) * 100 : 0;
 
-    return { rawRevenue, computedCost, leakCost, profitMargin, finalEfficiencyPct };
+    return {
+      rawRevenue, computedCost, leakCost, profitMargin, finalEfficiencyPct,
+      // Diagnostic counts for the empty-state hint
+      saleCount: sales.length, matchedSales, recipeCount: recipes.length, wasteCount: waste.length
+    };
   }, [recipes, components, sales, waste]);
 
   return (
@@ -2532,12 +3144,43 @@ function PerformanceScreen({ recipes = [], components = [], planner = [], sales 
         />
       </div>
 
-      {/* Rest of your financial UI analysis rendering blocks unchanged below */}
+      {/* Data-source guidance — surfaces what's missing so the user knows
+          which tab to fill in to make these numbers come alive */}
+      <div style={{ marginTop: 24, background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 6, padding: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 }}>
+          Inputs Driving This Report
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.ink }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: report.saleCount > 0 ? '#f0f4ec' : C.paper, borderRadius: 3 }}>
+            <span>{report.saleCount > 0 ? '✓' : '○'} <strong>Sales</strong> — drives Gross Intake</span>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: C.inkFade }}>
+              {report.saleCount} record(s){report.saleCount > 0 && `, ${report.matchedSales} matched to recipes`}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: report.recipeCount > 0 ? '#f0f4ec' : C.paper, borderRadius: 3 }}>
+            <span>{report.recipeCount > 0 ? '✓' : '○'} <strong>Recipes</strong> — provide sell price + cost basis</span>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: C.inkFade }}>
+              {report.recipeCount} recipe row(s)
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: report.wasteCount > 0 ? '#f0f4ec' : C.paper, borderRadius: 3 }}>
+            <span>{report.wasteCount > 0 ? '✓' : '○'} <strong>Waste</strong> — drives Spoilage Leakage</span>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: C.inkFade }}>
+              {report.wasteCount} entry(s)
+            </span>
+          </div>
+        </div>
+        {report.saleCount === 0 && (
+          <div style={{ marginTop: 12, fontSize: 12, color: C.inkFade, fontStyle: 'italic', lineHeight: 1.5 }}>
+            To populate this report: add sales on the <strong>Sales Analytics</strong> tab (or click Sync on a tile in <strong>POS Sync Gateway</strong> to drop in 6 test records). Then log any spoilage in <strong>Waste Tracker</strong>.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = [], onUpdateRecipes, settings }) {
+export function InvoicesScreen({ supabase, kitchenId, invoices = [], onUpdate, recipes = [], onUpdateRecipes, settings }) {
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [parsing, setParsing] = useState(false);
@@ -2545,6 +3188,15 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
 
   // Manual entry / edit modal state
   const [manualOpen, setManualOpen] = useState(false);
+
+  // Track viewport width so the manual / scan-review modal can switch
+  // between a desktop grid layout and a mobile card-per-line layout.
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   const [manualEditingId, setManualEditingId] = useState(null); // null = creating new
   const [manualSupplier, setManualSupplier] = useState("");
   const [manualTotal, setManualTotal] = useState("");
@@ -2553,6 +3205,9 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
   ]);
   const [manualSaving, setManualSaving] = useState(false);
   const [manualError, setManualError] = useState("");
+  // True when the modal was opened from a scan result (review-before-save).
+  // False when opened from "Enter Invoice Manually" or from an edit pencil.
+  const [reviewingScan, setReviewingScan] = useState(false);
   
   const [showLaptopCamera, setShowLaptopCamera] = useState(false);
   const videoRef = useRef(null);
@@ -2563,6 +3218,12 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
   const fileInputRef = useRef(null);
 
   const safeInvoices = invoices || [];
+
+  // Local DB-sourced list — the historical log reads from this so a fresh
+  // save / delete is always reflected, independent of what useKitchenState
+  // does with the prop downstream.
+  const [localInvoices, setLocalInvoices] = useState(safeInvoices);
+  useEffect(() => { setLocalInvoices(safeInvoices); }, [invoices]);
   const currentCurrency = settings?.currency || '£';
 
   const C = {
@@ -2588,14 +3249,17 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     const loadInvoices = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const uid = session?.user?.id;
+        const uid = kitchenId || session?.user?.id;
         if (!uid) return;
         const { data } = await supabase
           .from('invoices')
           .select('*')
           .eq('kitchen_id', uid)
           .order('created_at', { ascending: false });
-        if (!cancelled && data && onUpdate) onUpdate(data);
+        if (!cancelled && data) {
+          setLocalInvoices(data);
+          if (onUpdate) onUpdate(data);
+        }
       } catch (err) {
         console.error("Invoice list refresh failed:", err);
       }
@@ -2605,7 +3269,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     window.addEventListener('mise-db-update', onDbUpdate);
     return () => { cancelled = true; window.removeEventListener('mise-db-update', onDbUpdate); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [kitchenId]);
 
   // ============================================================
   // DATABASE RETRIEVAL & AI PROCESSING PIPELINE
@@ -2618,13 +3282,15 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
         throw new Error("Supabase client instance was not provided down via component context props.");
       }
 
-      // 1. RESOLVE USER ID AS KITCHEN ID
+      // 1. RESOLVE KITCHEN ID — use the prop (resolved from kitchen_members) if available,
+      //    fall back to session.user.id for backward compatibility.
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) throw sessionError;
 
-      const activeKitchenId = session?.user?.id;
+      const authorUserId = session?.user?.id;
+      const activeKitchenId = kitchenId || authorUserId;
       if (!activeKitchenId) {
-        throw new Error("No active user session found. Please log in again.");
+        throw new Error("No active kitchen found. Please log in again.");
       }
 
       // 2. Convert image file to raw base64 data stream string
@@ -2669,101 +3335,52 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
         rawInvoice.id || 
         `INV-${Date.now().toString().slice(-6)}`;
 
-      // 5. Insert directly into your invoices table
-      const { data: insertedInvoice, error: insertError } = await supabase
-        .from('invoices')
-        .insert([{
-          kitchen_id: activeKitchenId,
-          supplier: extractedSupplier,
-          total: extractedTotal,
-          ref: extractedRef, 
-          inv_date: extractedDate,
-          created_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
-
-      // 6. Bulk write line items straight to invoice_lines
-      // Strip currency symbols / commas before parsing (e.g. "£0.80" -> 0.80)
+      // 5. Strip currency symbols / commas before parsing (e.g. "£0.80" -> 0.80)
       const toNum = (v) => {
         if (typeof v === 'number') return isNaN(v) ? 0 : v;
         const cleaned = String(v == null ? '' : v).replace(/[^0-9.\-]/g, '');
         const n = parseFloat(cleaned);
         return isNaN(n) ? 0 : n;
       };
-      let savedLineCount = 0;
-      let lineSaveError = null;
-      let anyPricedLine = false;
-      if (Array.isArray(extractedItems) && extractedItems.length > 0) {
-        const formattedLines = extractedItems.map((item, index) => {
-          const qty = toNum(item.qty || item.quantity || 1) || 1;
-          let pricePerUnit = toNum(item.price_per_unit || item.unit_price || item.price || item.rate || 0);
-          let lineTotal = toNum(item.line_total || item.total || item.amount || 0);
 
-          // Fill in whichever value is missing from the other
-          if (pricePerUnit === 0 && lineTotal > 0 && qty > 0) pricePerUnit = lineTotal / qty;
-          if (lineTotal === 0 && pricePerUnit > 0) lineTotal = pricePerUnit * qty;
+      // 6. Hand the extracted data to the manual entry / review modal.
+      //    Nothing is written to the database until the user clicks Save in
+      //    the modal — same review pattern as the Recipe Digitizer.
+      const reviewLines = (Array.isArray(extractedItems) ? extractedItems : []).map((item) => {
+        const qty = toNum(item.qty || item.quantity || 1) || 1;
+        let pricePerUnit = toNum(item.price_per_unit || item.unit_price || item.price || item.rate || 0);
+        let lineTotal = toNum(item.line_total || item.total || item.amount || 0);
+        if (pricePerUnit === 0 && lineTotal > 0 && qty > 0) pricePerUnit = lineTotal / qty;
+        if (lineTotal === 0 && pricePerUnit > 0) lineTotal = pricePerUnit * qty;
+        return {
+          name: item.description || item.name || '',
+          qty: String(qty),
+          unit: item.unit || 'ea',
+          price_per_unit: pricePerUnit ? String(pricePerUnit) : '',
+          line_total: lineTotal ? String(lineTotal) : ''
+        };
+      });
+      const anyPricedLine = reviewLines.some(l => parseFloat(l.price_per_unit) > 0 || parseFloat(l.line_total) > 0);
 
-          if (pricePerUnit > 0 || lineTotal > 0) anyPricedLine = true;
-
-          return {
-            kitchen_id: activeKitchenId,
-            invoice_id: insertedInvoice.id,
-            position: index + 1,
-            name: item.description || item.name || 'Item',
-            qty: qty,
-            unit: item.unit || 'ea',
-            price_per_unit: pricePerUnit,
-            line_total: lineTotal
-          };
-        });
-
-        const { data: insertedLines, error: linesError } = await supabase
-          .from('invoice_lines')
-          .insert(formattedLines)
-          .select();
-
-        if (linesError) {
-          console.error("Line items writing exception:", linesError);
-          lineSaveError = linesError;
-        } else {
-          savedLineCount = insertedLines ? insertedLines.length : formattedLines.length;
-        }
-      }
-
-      // 7. Update browser view memory matrices instantly
-      const updatedInvoiceWithItems = { ...insertedInvoice, items: extractedItems };
-      const updatedInvoicesList = [...safeInvoices, updatedInvoiceWithItems];
-      
-      if (onUpdate) onUpdate(updatedInvoicesList);
-
-      // Force state update for the recipes view
-      const recipesToUpdate = result?.updatedRecipes || result?.recipes;
-      if (recipesToUpdate && onUpdateRecipes) {
-        onUpdateRecipes(recipesToUpdate);
-      }
-
-      // Tell Recipes & Costs (and other tabs) to reload invoice line data
-      window.dispatchEvent(new Event('mise-db-update'));
+      // Populate the manual-entry modal in "new invoice" mode
+      setManualEditingId(null);
+      setReviewingScan(true);
+      setManualSupplier(extractedSupplier || '');
+      setManualTotal(extractedTotal ? String(extractedTotal) : '');
+      setManualLines(reviewLines.length > 0 ? reviewLines : [{ name: '', qty: '1', unit: 'kg', price_per_unit: '', line_total: '' }]);
+      setManualError('');
+      setManualOpen(true);
 
       clearStagedFile();
 
-      if (lineSaveError) {
-        alert("Invoice saved, but its line items could NOT be stored.\n\nDatabase said: " + (lineSaveError.message || JSON.stringify(lineSaveError)) + "\n\nWithout line items, Recipes & Costs has no prices to match.");
-      } else if (savedLineCount === 0) {
-        alert("Invoice saved, but the scan returned 0 line items, so there are no prices to match in Recipes & Costs. Try a clearer photo or a more itemised invoice.");
+      if (reviewLines.length === 0) {
+        alert("⚠️ The scan returned 0 line items. Add lines manually in the review screen, then Save.");
       } else if (!anyPricedLine) {
         alert(
           "⚠️ Scan partially worked.\n\n" +
-          "The AI read the line items (" + savedLineCount + " items: names, quantities, units) but couldn't read any of the prices on this scan. This is occasional OCR variance, not a bug in the app.\n\n" +
-          "Two ways to fix it:\n" +
-          "1. Click the ✏️ edit pencil on this invoice in the log below and type the prices in.\n" +
-          "2. Or delete it (🗑) and re-scan with a clearer photo, or use 'Enter Invoice Manually'."
+          "The AI read " + reviewLines.length + " item(s) (names, quantities, units) but couldn't read prices on this scan. " +
+          "Review the items below and type the prices in before saving."
         );
-      } else {
-        alert("🎉 Success! Invoice saved with " + savedLineCount + " line item(s). Open Recipes & Costs to see matched prices.");
       }
 
     } catch (error) {
@@ -2840,6 +3457,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     setManualTotal("");
     setManualLines([{ name: "", qty: "1", unit: "kg", price_per_unit: "", line_total: "" }]);
     setManualError("");
+    setReviewingScan(false);
   };
 
   const handleOpenManualInvoice = () => {
@@ -2850,6 +3468,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
   const handleEditInvoice = async (inv) => {
     if (!inv) return;
     setManualError("");
+    setReviewingScan(false);
     setManualEditingId(inv.id);
     setManualSupplier(inv.supplier || "");
     setManualTotal(inv.total != null ? String(inv.total) : "");
@@ -2885,7 +3504,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     if (!confirmed) return;
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const activeKitchenId = session?.user?.id;
+      const activeKitchenId = kitchenId || session?.user?.id;
 
       // Lines first (no cascade assumed). .select() makes the API return the rows
       // that were actually deleted — empty array means the DB silently refused.
@@ -2914,9 +3533,14 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
           .select('*')
           .eq('kitchen_id', activeKitchenId)
           .order('created_at', { ascending: false });
-        if (refreshed && onUpdate) onUpdate(refreshed);
+        if (refreshed) {
+          setLocalInvoices(refreshed);
+          if (onUpdate) onUpdate(refreshed);
+        }
       } else {
-        if (onUpdate) onUpdate(safeInvoices.filter(i => i.id !== inv.id));
+        const remaining = localInvoices.filter(i => i.id !== inv.id);
+        setLocalInvoices(remaining);
+        if (onUpdate) onUpdate(remaining);
       }
 
       window.dispatchEvent(new Event('mise-db-update'));
@@ -2952,7 +3576,8 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
     setManualSaving(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const activeKitchenId = session?.user?.id;
+      const authorUserId = session?.user?.id;
+      const activeKitchenId = kitchenId || authorUserId;
       if (!activeKitchenId) throw new Error("No active session — please log in again.");
 
       // Compute the total from the lines if the user didn't enter one
@@ -2968,7 +3593,12 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
         // EDIT: update header, then wipe + replace its lines
         const { data: updatedRows, error: updErr } = await supabase
           .from('invoices')
-          .update({ supplier: manualSupplier.trim(), total: totalToSave })
+          .update({
+            supplier: manualSupplier.trim(),
+            total: totalToSave,
+            last_edited_by: authorUserId,
+            last_edited_at: new Date().toISOString()
+          })
           .eq('id', manualEditingId)
           .select();
         if (updErr) throw updErr;
@@ -2979,7 +3609,7 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
           .from('invoice_lines')
           .delete()
           .eq('invoice_id', manualEditingId)
-          .select(); // .select() so RLS issues surface as a real error rather than silently doing nothing
+          .select();
         if (linesDelErr) {
           throw new Error("Failed to clear the old line items before re-inserting: " + linesDelErr.message);
         }
@@ -2991,8 +3621,12 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
             kitchen_id: activeKitchenId,
             supplier: manualSupplier.trim(),
             total: totalToSave,
-            invoice_date: new Date().toISOString(),
-            created_at: new Date().toISOString()
+            ref: `MAN-${Date.now().toString(36).toUpperCase()}`, // satisfies NOT NULL; uniqueness via timestamp
+            inv_date: new Date().toISOString().slice(0, 10), // YYYY-MM-DD form, matches OCR pipeline
+            created_at: new Date().toISOString(),
+            created_by: authorUserId,
+            last_edited_by: authorUserId,
+            last_edited_at: new Date().toISOString()
           }])
           .select()
           .single();
@@ -3014,7 +3648,10 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
           qty: qty,
           unit: (l.unit || "ea").trim(),
           price_per_unit: pricePerUnit,
-          line_total: lineTotal
+          line_total: lineTotal,
+          created_by: authorUserId,
+          last_edited_by: authorUserId,
+          last_edited_at: new Date().toISOString()
         };
       });
 
@@ -3027,11 +3664,27 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
         .select('*')
         .eq('kitchen_id', activeKitchenId)
         .order('created_at', { ascending: false });
-      if (refreshed && onUpdate) onUpdate(refreshed);
+      if (refreshed) {
+        setLocalInvoices(refreshed);
+        if (onUpdate) onUpdate(refreshed);
+      }
 
       window.dispatchEvent(new Event('mise-db-update'));
       setManualOpen(false);
+      const wasEditing = !!manualEditingId;
+      const wasReviewing = reviewingScan;
       resetManualForm();
+      // Visible confirmation so the user can see what happened
+      const newSupplier = manualSupplier.trim();
+      setTimeout(() => {
+        alert(
+          wasEditing
+            ? `✓ Invoice "${newSupplier}" updated.`
+            : wasReviewing
+              ? `✓ Scanned invoice from "${newSupplier}" saved. You'll find it in the Historical Tenant Document Logs below, and the prices are now live in Recipes & Costs.`
+              : `✓ Invoice from "${newSupplier}" saved.`
+        );
+      }, 50);
     } catch (err) {
       console.error("Manual invoice save failed:", err);
       setManualError(err.message || "Save failed.");
@@ -3170,10 +3823,10 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
             HISTORICAL TENANT DOCUMENT LOGS
           </div>
           <div style={{ overflowY: 'auto', maxHeight: 300, marginTop: 12 }}>
-            {safeInvoices.length === 0 ? (
+            {localInvoices.length === 0 ? (
               <p style={{ fontSize: 12, color: C.inkFade, fontStyle: 'italic' }}>No processed items mapped inside local ledger frame cache.</p>
             ) : (
-              safeInvoices.map((inv) => (
+              localInvoices.map((inv) => (
                 <div key={inv.id} style={{ padding: '10px 12px', background: C.highlight, borderBottom: `1px solid ${C.paper2}`, marginBottom: 6, borderLeft: `3px solid ${C.accent}` }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 700, fontSize: 14, gap: 8 }}>
                     <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>{inv.supplier}</span>
@@ -3209,10 +3862,14 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, paddingBottom: 8, borderBottom: `1px solid ${C.paper2}` }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 800, color: C.inkFade, letterSpacing: '0.5px', fontFamily: "'JetBrains Mono', monospace" }}>
-                  {manualEditingId ? "EDIT INVOICE" : "NEW MANUAL INVOICE"}
+                  {manualEditingId ? "EDIT INVOICE" : reviewingScan ? "REVIEW SCANNED INVOICE" : "NEW MANUAL INVOICE"}
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 700, marginTop: 2 }}>
-                  {manualEditingId ? "Update supplier, total, and line items" : "Type the invoice details directly"}
+                  {manualEditingId
+                    ? "Update supplier, total, and line items"
+                    : reviewingScan
+                      ? "Check the AI-extracted details below and edit before saving"
+                      : "Type the invoice details directly"}
                 </div>
               </div>
               <button onClick={() => { setManualOpen(false); resetManualForm(); }} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', lineHeight: 1 }}>×</button>
@@ -3252,64 +3909,71 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
               Line items
             </div>
 
-            {/* Column headers — matches the grid below so labels sit above their inputs */}
-            <div style={{ padding: '0 8px', display: 'grid', gridTemplateColumns: '2fr 0.7fr 0.7fr 1fr 1fr 32px', gap: 6, fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: 4 }}>
-              <div>Item Name</div>
-              <div>Qty</div>
-              <div>Unit</div>
-              <div>Unit Price ({currentCurrency})</div>
-              <div>Line Total ({currentCurrency})</div>
-              <div></div>
-            </div>
+            {/* Column headers — matches the grid below so labels sit above their inputs.
+                Headers hidden on mobile since the mobile layout uses inline labels. */}
+            {!isMobile && (
+              <div style={{ padding: '0 8px', display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr) 32px', gap: 6, fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: 4 }}>
+                <div>Item Name</div>
+                <div>Qty</div>
+                <div>Unit</div>
+                <div>Unit Price ({currentCurrency})</div>
+                <div>Line Total ({currentCurrency})</div>
+                <div></div>
+              </div>
+            )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-              {manualLines.map((row, idx) => (
-                <div key={idx} style={{ background: C.paper, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 8, display: 'grid', gridTemplateColumns: '2fr 0.7fr 0.7fr 1fr 1fr 32px', gap: 6, alignItems: 'center' }}>
+              {manualLines.map((row, idx) => isMobile ? (
+                // -------- Mobile card per line --------
+                <div key={idx} style={{ background: C.paper, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: '0.5px' }}>LINE {idx + 1}</div>
+                    <button
+                      onClick={() => removeManualLine(idx)}
+                      disabled={manualLines.length === 1}
+                      style={{ background: 'transparent', color: manualLines.length === 1 ? C.inkFade : C.red, border: `1px solid ${manualLines.length === 1 ? C.paper2 : C.red}`, borderRadius: 3, padding: '4px 10px', fontSize: 11, cursor: manualLines.length === 1 ? 'not-allowed' : 'pointer' }}
+                    >
+                      ✕ Remove
+                    </button>
+                  </div>
+                  <label style={{ display: 'block', fontSize: 10, color: C.inkFade, fontWeight: 700, marginBottom: 2, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Item Name</label>
                   <input
                     type="text"
-                    placeholder="Item name (e.g. Milk)"
+                    placeholder="e.g. Milk"
                     value={row.name}
                     onChange={(e) => updateManualLine(idx, 'name', e.target.value)}
-                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
+                    style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 3, marginBottom: 8 }}
                   />
-                  <input
-                    type="text"
-                    placeholder="Qty"
-                    value={row.qty}
-                    onChange={(e) => updateManualLine(idx, 'qty', e.target.value)}
-                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
-                  />
-                  <input
-                    type="text"
-                    placeholder="Unit"
-                    value={row.unit}
-                    onChange={(e) => updateManualLine(idx, 'unit', e.target.value)}
-                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
-                  />
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder={`Price/unit (${currentCurrency})`}
-                    value={row.price_per_unit}
-                    onChange={(e) => updateManualLine(idx, 'price_per_unit', e.target.value)}
-                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
-                  />
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder={`Line total (${currentCurrency})`}
-                    value={row.line_total}
-                    onChange={(e) => updateManualLine(idx, 'line_total', e.target.value)}
-                    style={{ padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3 }}
-                  />
-                  <button
-                    onClick={() => removeManualLine(idx)}
-                    disabled={manualLines.length === 1}
-                    title="Remove line"
-                    style={{ background: 'transparent', color: manualLines.length === 1 ? C.inkFade : C.red, border: `1px solid ${manualLines.length === 1 ? C.paper2 : C.red}`, borderRadius: 3, padding: '4px 8px', fontSize: 12, cursor: manualLines.length === 1 ? 'not-allowed' : 'pointer' }}
-                  >
-                    ✕
-                  </button>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 10, color: C.inkFade, fontWeight: 700, marginBottom: 2, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Qty</label>
+                      <input type="text" value={row.qty} onChange={(e) => updateManualLine(idx, 'qty', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 3 }} />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 10, color: C.inkFade, fontWeight: 700, marginBottom: 2, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Unit</label>
+                      <input type="text" value={row.unit} onChange={(e) => updateManualLine(idx, 'unit', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 3 }} />
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 10, color: C.inkFade, fontWeight: 700, marginBottom: 2, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Unit Price ({currentCurrency})</label>
+                      <input type="number" step="0.01" value={row.price_per_unit} onChange={(e) => updateManualLine(idx, 'price_per_unit', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 3 }} />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 10, color: C.inkFade, fontWeight: 700, marginBottom: 2, letterSpacing: '0.5px', textTransform: 'uppercase' }}>Line Total ({currentCurrency})</label>
+                      <input type="number" step="0.01" value={row.line_total} onChange={(e) => updateManualLine(idx, 'line_total', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 13, border: `1px solid ${C.paper2}`, borderRadius: 3 }} />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                // -------- Desktop grid row --------
+                <div key={idx} style={{ background: C.paper, border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 8, display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1fr) 32px', gap: 6, alignItems: 'center' }}>
+                  <input type="text" placeholder="Item name (e.g. Milk)" value={row.name} onChange={(e) => updateManualLine(idx, 'name', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3, minWidth: 0 }} />
+                  <input type="text" placeholder="Qty" value={row.qty} onChange={(e) => updateManualLine(idx, 'qty', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3, minWidth: 0 }} />
+                  <input type="text" placeholder="Unit" value={row.unit} onChange={(e) => updateManualLine(idx, 'unit', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3, minWidth: 0 }} />
+                  <input type="number" step="0.01" placeholder={`Price/unit`} value={row.price_per_unit} onChange={(e) => updateManualLine(idx, 'price_per_unit', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3, minWidth: 0 }} />
+                  <input type="number" step="0.01" placeholder={`Line total`} value={row.line_total} onChange={(e) => updateManualLine(idx, 'line_total', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: 6, fontSize: 12, border: `1px solid ${C.paper2}`, borderRadius: 3, minWidth: 0 }} />
+                  <button onClick={() => removeManualLine(idx)} disabled={manualLines.length === 1} title="Remove line" style={{ background: 'transparent', color: manualLines.length === 1 ? C.inkFade : C.red, border: `1px solid ${manualLines.length === 1 ? C.paper2 : C.red}`, borderRadius: 3, padding: '4px 8px', fontSize: 12, cursor: manualLines.length === 1 ? 'not-allowed' : 'pointer' }}>✕</button>
                 </div>
               ))}
             </div>
@@ -3343,29 +4007,228 @@ export function InvoicesScreen({ supabase, invoices = [], onUpdate, recipes = []
   );
 }
 
-function SuppliersScreen() {
+function SuppliersScreen({ supabase, kitchenId, settings }) {
+  const currency = settings?.currency || '£';
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState([]);          // matrix derived from real invoices
+  const [supplierCount, setSupplierCount] = useState(0);
+  const [totalSavings, setTotalSavings] = useState(0);
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Build the comparison matrix from real invoice data for this kitchen.
+  // Strategy:
+  //   1. Pull every invoice + every line in this kitchen.
+  //   2. Group lines by lower(name); for each name capture {supplier -> latest price/unit}.
+  //   3. Display items that have at least one priced line. Highlight cheapest.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!supabase || !kitchenId) { setLoading(false); return; }
+      try {
+        setLoading(true);
+        const [invRes, lineRes] = await Promise.all([
+          supabase.from('invoices').select('id, supplier, kitchen_id').eq('kitchen_id', kitchenId),
+          supabase.from('invoice_lines').select('invoice_id, name, unit, price_per_unit, line_total, last_edited_at').eq('kitchen_id', kitchenId)
+        ]);
+        if (cancelled) return;
+        const invoices = invRes.data || [];
+        const lines    = lineRes.data || [];
+        const supplierById = new Map(invoices.map(i => [i.id, (i.supplier || 'Unknown').trim()]));
+
+        // Items → Map<supplier, {price, unit, ts}>
+        const byItem = new Map();
+        const supplierSet = new Set();
+        for (const l of lines) {
+          const supplier = supplierById.get(l.invoice_id);
+          if (!supplier) continue;
+          const price = Number(l.price_per_unit) || 0;
+          if (price <= 0) continue; // skip priceless rows so they don't pollute the comparison
+          const key = (l.name || '').trim();
+          if (!key) continue;
+          supplierSet.add(supplier);
+          if (!byItem.has(key)) byItem.set(key, new Map());
+          const prev = byItem.get(key).get(supplier);
+          const ts = l.last_edited_at ? new Date(l.last_edited_at).getTime() : 0;
+          // Keep the most-recent priced entry per (item, supplier)
+          if (!prev || ts >= prev.ts) {
+            byItem.get(key).set(supplier, { price, unit: l.unit || '', ts });
+          }
+        }
+
+        let savings = 0;
+        const matrix = [];
+        for (const [name, suppliers] of byItem) {
+          const offers = Array.from(suppliers.entries()).map(([s, v]) => ({ supplier: s, price: v.price, unit: v.unit }));
+          if (offers.length === 0) continue;
+          offers.sort((a, b) => a.price - b.price);
+          const cheapest = offers[0];
+          const dearest  = offers[offers.length - 1];
+          const saving   = offers.length > 1 ? (dearest.price - cheapest.price) : 0;
+          savings += saving;
+          matrix.push({ name, offers, cheapestSupplier: cheapest.supplier, saving, unit: cheapest.unit });
+        }
+        matrix.sort((a, b) => b.saving - a.saving);
+
+        setRows(matrix);
+        setSupplierCount(supplierSet.size);
+        setTotalSavings(savings);
+      } catch (err) {
+        console.error("Market Intel load failed:", err);
+        setRows([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    const onUpdate = () => load();
+    window.addEventListener('mise-db-update', onUpdate);
+    return () => { cancelled = true; window.removeEventListener('mise-db-update', onUpdate); };
+  }, [supabase, kitchenId]);
+
+  // Sorted list of every supplier seen, for table headers
+  const supplierColumns = Array.from(
+    new Set(rows.flatMap(r => r.offers.map(o => o.supplier)))
+  ).sort();
+
+  const headerBlock = (
+    <ScreenHeader title="Cross Wholesaler Pricing Matrices" sub="Compare prices across the suppliers you've scanned invoices from" />
+  );
+
+  if (loading) {
+    return (
+      <div style={S.container}>
+        {headerBlock}
+        <div style={{ ...S.card, color: C.inkFade, fontSize: 13 }}>Loading from your invoice history…</div>
+      </div>
+    );
+  }
+
+  // EMPTY STATE — no priced lines, or only one supplier
+  if (rows.length === 0 || supplierCount < 2) {
+    return (
+      <div style={S.container}>
+        {headerBlock}
+        <div style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 6, padding: 24, textAlign: 'center' }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>📊</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, marginBottom: 6 }}>
+            {rows.length === 0
+              ? "No supplier data yet"
+              : `Only one supplier scanned (${supplierColumns[0] || ''})`}
+          </div>
+          <div style={{ fontSize: 13, color: C.inkFade, maxWidth: 540, margin: '0 auto', lineHeight: 1.5 }}>
+            Market Intel compares prices across the suppliers you've scanned invoices from. {rows.length === 0
+              ? "Scan invoices from at least two suppliers in Invoice Scan and the price comparison will appear here."
+              : "Scan an invoice from a different supplier and the comparison will appear automatically."}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Mobile card layout
+  if (isMobile) {
+    return (
+      <div style={S.container}>
+        {headerBlock}
+        <div style={{ background: '#121210', color: '#fff', padding: 12, borderRadius: 4, marginBottom: 12 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase' }}>Potential Saving / unit (buy cheapest)</div>
+          <div style={{ fontSize: 22, fontWeight: 900, marginTop: 4, fontFamily: "'JetBrains Mono', monospace" }}>
+            {currency}{totalSavings.toFixed(2)}
+          </div>
+          <div style={{ fontSize: 11, color: C.inkFade, marginTop: 4 }}>
+            Across {rows.length} items, {supplierCount} suppliers
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {rows.map(({ name, offers, cheapestSupplier, saving, unit }) => (
+            <div key={name} style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>
+                {name} {unit && <span style={{ color: C.inkFade, fontWeight: 500, fontSize: 11 }}>/ {unit}</span>}
+              </div>
+              {offers.map(o => {
+                const isCheapest = o.supplier === cheapestSupplier && offers.length > 1;
+                return (
+                  <div key={o.supplier} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${C.paper2}` }}>
+                    <span style={{ fontSize: 13, color: C.ink, fontWeight: isCheapest ? 700 : 500 }}>
+                      {o.supplier}
+                      {isCheapest && <span style={{ marginLeft: 6, background: '#4a6b3a', color: '#fff', padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700 }}>BEST</span>}
+                    </span>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: isCheapest ? '#4a6b3a' : C.ink }}>
+                      {currency}{o.price.toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
+              {saving > 0 && (
+                <div style={{ fontSize: 11, color: C.inkFade, marginTop: 6 }}>
+                  Save {currency}{saving.toFixed(2)}/unit by buying from {cheapestSupplier}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Desktop table
   return (
     <div style={S.container}>
-      <ScreenHeader title="Cross Wholesaler Pricing Matrices" sub="Cross reference spot pricing indices across approved vendor streams" />
-      <div style={S.card}>
-        <table style={{width:"100%", borderCollapse:"collapse", textAlign:"left"}}>
+      {headerBlock}
+
+      <div style={{ background: '#121210', color: '#fff', padding: 14, borderRadius: 4, marginBottom: 16, display: 'inline-block' }}>
+        <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase' }}>Total Potential Saving / unit</div>
+        <div style={{ fontSize: 22, fontWeight: 900, marginTop: 4, fontFamily: "'JetBrains Mono', monospace" }}>
+          {currency}{totalSavings.toFixed(2)}
+        </div>
+        <div style={{ fontSize: 11, color: C.inkFade, marginTop: 4 }}>
+          {rows.length} items, {supplierCount} suppliers
+        </div>
+      </div>
+
+      <div style={{ ...S.card, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
           <thead>
-            <tr style={{borderBottom:"2px solid #1a1a18"}}>
-              <th style={{padding:10}}><SectionLabel label="Commodity Row" /></th>
-              <th style={{padding:10}}><SectionLabel label="Wellocks Spot" /></th>
-              <th style={{padding:10}}><SectionLabel label="Reynolds Spot" /></th>
-              <th style={{padding:10}}><SectionLabel label="Brakes Spot" /></th>
+            <tr style={{ borderBottom: '2px solid #1a1a18' }}>
+              <th style={{ padding: 10 }}><SectionLabel label="Commodity Row" /></th>
+              {supplierColumns.map(s => (
+                <th key={s} style={{ padding: 10 }}><SectionLabel label={s} /></th>
+              ))}
+              <th style={{ padding: 10 }}><SectionLabel label="Save / unit" /></th>
             </tr>
           </thead>
           <tbody>
-            {Object.keys(SUPPLIER_PRICES).map((item, i) => (
-              <tr key={i} style={{borderBottom:`1px solid ${C.paper2}`}}>
-                <td style={{padding:12, fontWeight:700}}>{item}</td>
-                <td style={{padding:12, fontFamily:"'JetBrains Mono', monospace"}}>£{SUPPLIER_PRICES[item].Wellocks.toFixed(2)}</td>
-                <td style={{padding:12, fontFamily:"'JetBrains Mono', monospace"}}>£{SUPPLIER_PRICES[item].Reynolds.toFixed(2)}</td>
-                <td style={{padding:12, fontFamily:"'JetBrains Mono', monospace"}}>£{SUPPLIER_PRICES[item].Brakes.toFixed(2)}</td>
-              </tr>
-            ))}
+            {rows.map(({ name, offers, cheapestSupplier, saving, unit }) => {
+              const priceBy = Object.fromEntries(offers.map(o => [o.supplier, o.price]));
+              return (
+                <tr key={name} style={{ borderBottom: `1px solid ${C.paper2}` }}>
+                  <td style={{ padding: 12, fontWeight: 700 }}>
+                    {name}
+                    {unit && <span style={{ color: C.inkFade, fontWeight: 500, fontSize: 11, marginLeft: 4 }}>/ {unit}</span>}
+                  </td>
+                  {supplierColumns.map(s => {
+                    const price = priceBy[s];
+                    const isCheapest = s === cheapestSupplier && offers.length > 1;
+                    return (
+                      <td key={s} style={{ padding: 12, fontFamily: "'JetBrains Mono', monospace", fontWeight: isCheapest ? 800 : 500, color: price == null ? C.inkFade : (isCheapest ? '#4a6b3a' : C.ink), background: isCheapest ? '#f0f4ec' : 'transparent' }}>
+                        {price == null ? '—' : `${currency}${price.toFixed(2)}`}
+                        {isCheapest && <span style={{ marginLeft: 6, background: '#4a6b3a', color: '#fff', padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 700 }}>BEST</span>}
+                      </td>
+                    );
+                  })}
+                  <td style={{ padding: 12, fontFamily: "'JetBrains Mono', monospace", color: saving > 0 ? C.accent : C.inkFade, fontWeight: 700 }}>
+                    {saving > 0 ? `${currency}${saving.toFixed(2)}` : '—'}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -3379,23 +4242,73 @@ function PosScreen({ sales, recipes, onUpdate }) {
   const triggerSync = () => {
     setSyncing(true);
     setTimeout(() => {
+      // Group flat ingredient rows into distinct recipes; we need
+      // real recipe IDs so the mock sales actually link to them in
+      // Sales Analytics and contribute to Financial Matrix revenue.
+      const grouped = groupRecipesByName(recipes);
+      if (grouped.length === 0) {
+        alert("No recipes saved yet. Add a recipe via Recipe Digitizer first — the POS sync injects sales that bind to real recipes.");
+        setSyncing(false);
+        return;
+      }
+
+      // Build 6 mock Friday transactions cycling through the kitchen's
+      // actual recipes
+      const sessions     = ['Lunch', 'Lunch', 'Lunch', 'Dinner', 'Dinner', 'Dinner'];
+      const quantities   = [12, 8, 5, 18, 14, 9];
+      const newRecords   = sessions.map((session, i) => ({
+        day: 'Fri',
+        session,
+        recipeId: grouped[i % grouped.length].id,
+        sold: quantities[i]
+      }));
+
+      // Merge additively with existing sales
       const merged = [...sales];
-      POS_MOCK_BATCH.forEach(batchRow => {
-        const index = merged.findIndex(s => s.day === batchRow.day && s.session === batchRow.session && s.recipeId === batchRow.recipeId);
-        if (index !== -1) {
-          merged[index] = { ...merged[index], sold: merged[index].sold + batchRow.sold };
-        } else {
-          merged.push(batchRow);
-        }
+      newRecords.forEach(rec => {
+        const idx = merged.findIndex(s => s.day === rec.day && s.session === rec.session && s.recipeId === rec.recipeId);
+        if (idx !== -1) merged[idx] = { ...merged[idx], sold: merged[idx].sold + rec.sold };
+        else merged.push(rec);
       });
+
       onUpdate(merged);
       setSyncing(false);
+      alert(`✓ Injected 6 mock Friday sales mapped to your real recipes. Open Sales Analytics or Financial Matrix to see them.`);
     }, 1200);
+  };
+
+  const clearAllSales = () => {
+    if (!sales || sales.length === 0) {
+      alert("Sales list is already empty.");
+      return;
+    }
+    if (window.confirm(`Wipe all ${sales.length} sales record(s)? This cannot be undone.`)) {
+      onUpdate([]);
+    }
   };
 
   return (
     <div style={S.container}>
       <ScreenHeader title="Point Of Sale Synchronization Gateways" sub="Interface registers and streaming terminal transactions into the tracking engine" />
+
+      <div style={{ background: '#fff8e9', border: `1px solid ${C.accent}`, borderLeft: `4px solid ${C.accent}`, borderRadius: 4, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>How sync works (test mode)</div>
+        <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.5 }}>
+          Real POS integrations aren't connected yet — these are demo providers. Tapping <strong>Sync</strong> on any tile drops 6 sample Friday transactions <em>bound to your real saved recipes</em>, so <strong>Sales Analytics</strong> and <strong>Financial Matrix</strong> populate with meaningful data.
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontSize: 12, color: C.inkFade }}>
+          Currently {sales?.length || 0} sales record(s) in your ledger.
+        </div>
+        {sales?.length > 0 && (
+          <button onClick={clearAllSales} style={{ background: 'transparent', border: `1px solid ${C.red}`, color: C.red, padding: '6px 12px', fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', cursor: 'pointer', borderRadius: 3 }}>
+            ✕ Clear All Sales
+          </button>
+        )}
+      </div>
+
       <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(280px, 1fr))", gap:20}}>
         {POS_PROVIDERS.map(p => (
           <div key={p.id} style={S.card}>
@@ -3406,7 +4319,7 @@ function PosScreen({ sales, recipes, onUpdate }) {
             <h3 style={{fontFamily:"'Bitter', serif", fontSize:18, fontWeight:900, margin:"0 0 6px 0"}}>{p.name}</h3>
             <p style={{fontSize:12, color:C.inkFade, marginBottom:14}}>{p.desc}</p>
             <button onClick={triggerSync} disabled={syncing} style={S.btnAccent}>
-              {syncing ? "Parsing Stream..." : "Sync Active Terminal Rows"}
+              {syncing ? "Parsing Stream..." : "Inject 6 Test Sales"}
             </button>
           </div>
         ))}
@@ -3775,6 +4688,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
       }
 
       const sellValue = parseFloat(scannedSellPrice) || 0;
+      const nowIso = new Date().toISOString();
 
       const totalInsertRows = individualLines.map((ingredientRowText) => ({
         kitchen_id: activeKitchenId,
@@ -3783,7 +4697,10 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
         yield: scannedYield.trim() || "1 Portion",
         sell_price: sellValue,
         ingredient_item: ingredientRowText,
-        created_at: new Date().toISOString()
+        created_at: nowIso,
+        created_by: user?.id || null,
+        last_edited_by: user?.id || null,
+        last_edited_at: nowIso
       }));
 
       // If editing, remove the previous version of this recipe first so it's replaced cleanly
