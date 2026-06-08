@@ -860,8 +860,37 @@ function TeamScreen({ supabase, session, activeKitchenId }) {
 }
 
 function SettingsScreen({ settings, onUpdate }) {
+  // ─── Locale-driven currency auto-detection ───────────────────
+  // When the user picks "Auto" in the region selector we resolve their
+  // currency from the browser locale. Falls back to GBP if anything
+  // goes wrong. This means Paul on a UK device gets £, on a Thai
+  // device gets ฿, etc., with zero clicks.
+  const autoDetectCurrency = () => {
+    try {
+      const lang = (typeof navigator !== 'undefined' && navigator.language) || 'en-GB';
+      const locale = new Intl.Locale(lang).maximize();
+      const region = locale.region || 'GB';
+
+      // ISO-3166 region code → currency symbol (covers the most common
+      // operational regions; everything else falls through to £)
+      const map = {
+        GB: '£', IE: '€', US: '$', CA: 'C$', AU: 'A$', NZ: 'NZ$',
+        FR: '€', DE: '€', ES: '€', IT: '€', NL: '€', BE: '€', PT: '€', AT: '€', FI: '€', GR: '€',
+        JP: '¥', CN: '¥', HK: 'HK$', TW: 'NT$', KR: '₩', SG: 'S$',
+        TH: '฿', VN: '₫', MY: 'RM', ID: 'Rp', PH: '₱', IN: '₹',
+        AE: 'د.إ', SA: 'ر.س', IL: '₪', TR: '₺', ZA: 'R',
+        BR: 'R$', MX: '$', AR: '$', CL: '$', CO: '$',
+        CH: 'CHF', NO: 'kr', SE: 'kr', DK: 'kr', PL: 'zł', CZ: 'Kč', HU: 'Ft', RU: '₽'
+      };
+      return { currency: map[region] || '£', regionLabel: region };
+    } catch {
+      return { currency: '£', regionLabel: 'GB' };
+    }
+  };
+
   // Exhaustive mapping of globally active operational regions and currencies
   const regions = [
+    { code: 'AUTO', label: '🌍 Auto-detect from browser locale', currency: 'AUTO' },
     { code: 'AF', label: 'Afghanistan (AFN) – ؋', currency: '؋' },
     { code: 'AL', label: 'Albania (ALL) – L', currency: 'L' },
     { code: 'DZ', label: 'Algeria (DZD) – د.ج', currency: 'د.ج' },
@@ -1110,6 +1139,16 @@ function SettingsScreen({ settings, onUpdate }) {
 
   // 3. Keep internal tracking clean
   const handleRegionChange = (regionCode) => {
+    if (regionCode === 'AUTO') {
+      const { currency, regionLabel } = autoDetectCurrency();
+      setLocalSettings(prev => ({
+        ...prev,
+        region: 'AUTO',
+        currency
+      }));
+      setSavedSuccess(false);
+      return;
+    }
     const matchedRegion = regions.find(r => r.code === regionCode);
     if (matchedRegion) {
       setLocalSettings(prev => ({ 
@@ -1166,6 +1205,11 @@ function SettingsScreen({ settings, onUpdate }) {
               <option key={r.code} value={r.code}>{r.label}</option>
             ))}
           </select>
+          {localSettings.region === 'AUTO' && (
+            <div style={{ marginTop: 6, fontSize: 11, color: C.inkFade, fontStyle: 'italic' }}>
+              Resolved from your device locale: <strong style={{ color: C.accent, fontFamily: "'JetBrains Mono', monospace" }}>{localSettings.currency || '£'}</strong>. Travelling? This re-resolves whenever you re-pick Auto.
+            </div>
+          )}
         </div>
 
         <div>
@@ -1552,14 +1596,85 @@ function Dashboard(props) {
 }
 
 function PlannerScreen({ planner, onUpdate }) {
+  // Local editable state — typing into the inputs updates this only.
+  // Nothing hits the database until the user clicks Save Planner.
+  const [draft, setDraft] = useState(planner);
+  const [saving, setSaving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  // When the upstream planner prop changes (e.g. another device saved
+  // an update, or a kitchen-mate edited the same row), re-sync the draft.
+  useEffect(() => {
+    setDraft(planner);
+  }, [planner]);
+
+  // Compare draft vs. saved planner to know if there are unsaved changes
+  const isDirty = useMemo(() => {
+    if (!Array.isArray(draft) || !Array.isArray(planner)) return false;
+    if (draft.length !== planner.length) return true;
+    return draft.some((d, i) => (
+      (parseInt(d.lunch) || 0) !== (parseInt(planner[i]?.lunch) || 0) ||
+      (parseInt(d.dinner) || 0) !== (parseInt(planner[i]?.dinner) || 0)
+    ));
+  }, [draft, planner]);
+
   const updateDay = (idx, field, val) => {
-    const next = [...planner];
+    const next = [...draft];
     next[idx] = { ...next[idx], [field]: parseInt(val) || 0 };
-    onUpdate(next);
+    setDraft(next);
   };
+
+  const handleSave = async () => {
+    if (!isDirty || saving) return;
+    setSaving(true);
+    try {
+      await onUpdate(draft); // App-level handler upserts to planner_days
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 1800);
+    } catch (err) {
+      // onUpdate already alerts via the App-level handler
+      console.error(err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDiscard = () => {
+    if (!isDirty) return;
+    if (window.confirm("Discard your unsaved changes?")) {
+      setDraft(planner);
+    }
+  };
+
+  const totalDraft = draft.reduce((s, d) => s + (parseInt(d.lunch) || 0) + (parseInt(d.dinner) || 0), 0);
+
   return (
     <div style={S.container}>
       <ScreenHeader title="Weekly Covers Planner" sub="Establish baseline volume expectations for auto-scaling production bounds" />
+
+      {/* Save/Discard action bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ fontSize: 12, color: C.inkFade }}>
+          Total weekly covers in draft: <strong style={{ color: C.ink, fontFamily: "'JetBrains Mono', monospace", fontSize: 14 }}>{totalDraft}</strong>
+          {isDirty && <span style={{ marginLeft: 12, color: C.accent, fontWeight: 700 }}>● Unsaved changes</span>}
+          {savedFlash && !isDirty && <span style={{ marginLeft: 12, color: '#4a6b3a', fontWeight: 700 }}>✓ Saved</span>}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {isDirty && (
+            <button onClick={handleDiscard} disabled={saving} style={{ background: 'transparent', border: `1px solid ${C.inkFade}`, color: C.inkSoft, padding: '8px 14px', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', cursor: saving ? 'not-allowed' : 'pointer', borderRadius: 3 }}>
+              Discard
+            </button>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={!isDirty || saving}
+            style={{ background: (!isDirty || saving) ? C.paper2 : C.accent, border: 'none', color: (!isDirty || saving) ? C.inkFade : '#fff', padding: '8px 18px', fontSize: 12, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', cursor: (!isDirty || saving) ? 'not-allowed' : 'pointer', borderRadius: 3 }}
+          >
+            {saving ? 'Saving…' : '💾 Save Planner'}
+          </button>
+        </div>
+      </div>
+
       <div style={S.card}>
         <div style={{overflowX:'auto'}}>
           <table style={{width:'100%', borderCollapse:'collapse', textAlign:'left'}}>
@@ -1572,7 +1687,7 @@ function PlannerScreen({ planner, onUpdate }) {
               </tr>
             </thead>
             <tbody>
-              {planner.map((p, idx) => (
+              {draft.map((p, idx) => (
                 <tr key={idx} style={{borderBottom:`1px solid ${C.paper2}`}}>
                   <td style={{padding:'14px 8px', fontFamily:"'Bitter', serif", fontWeight:900, fontSize:16}}>{p.day}</td>
                   <td style={{padding:'14px 8px'}}>
@@ -1582,7 +1697,7 @@ function PlannerScreen({ planner, onUpdate }) {
                     <NumInput value={p.dinner} onChange={(v) => updateDay(idx, 'dinner', v)} />
                   </td>
                   <td style={{padding:'14px 8px', fontFamily:"'JetBrains Mono', monospace", fontSize:14, fontWeight:700}}>
-                    {p.lunch + p.dinner}
+                    {(parseInt(p.lunch) || 0) + (parseInt(p.dinner) || 0)}
                   </td>
                 </tr>
               ))}
@@ -5305,18 +5420,194 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
     { speaker: 'sous', text: "Chef. Live OpenAI context integration online. Ask me anything about menu costs, cover spikes, wastage tracking, or operational optimizations." }
   ]);
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if (!query.trim() || loading) return;
+  // ─── Voice mode state ────────────────────────────────────────
+  // Web Speech API is built into Chrome / Edge / Safari (free, no
+  // API key). Firefox doesn't support SpeechRecognition. We
+  // gracefully fall back to text-only on unsupported browsers.
+  const SpeechRecognitionImpl = typeof window !== 'undefined'
+    ? (window.SpeechRecognition || window.webkitSpeechRecognition)
+    : null;
+  const voiceSupported = !!SpeechRecognitionImpl;
+  const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
-    const userMessage = { speaker: 'user', text: query };
+  const [listening, setListening] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState(true); // voice replies on by default for hands-free chef use
+  const [autoSubmit, setAutoSubmit] = useState(true); // submit automatically when speech recognition finishes
+  const [continuous, setContinuous] = useState(false); // keep the conversation going: mic reopens after Sous finishes speaking
+  const [speaking, setSpeaking] = useState(false);
+  const [voiceError, setVoiceError] = useState('');
+  const recognitionRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const queryRef = useRef(query); // keep the latest query in a ref for the recognition callback
+  useEffect(() => { queryRef.current = query; }, [query]);
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [chat, loading]);
+
+  // Strip markdown formatting (asterisks, underscores, backticks, list
+  // markers, link syntax, headings) so the TTS engine doesn't read
+  // "asterisk asterisk Wednesday asterisk asterisk" — and so the
+  // playback flows naturally without pausing on syntax characters.
+  const stripMarkdownForSpeech = (text) => {
+    if (!text) return '';
+    return String(text)
+      // **bold** and __bold__
+      .replace(/\*\*([\s\S]+?)\*\*/g, '$1')
+      .replace(/__([\s\S]+?)__/g, '$1')
+      // *italic* and _italic_  (do AFTER bold so we don't eat ** stars)
+      .replace(/\*([^*\n]+)\*/g, '$1')
+      .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '$1')
+      // `inline code` and ```fenced```
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      // # headings → drop the hashes
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      // [link text](url) → just the text
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      // bullet markers at start of line → drop them
+      .replace(/^\s*[-*+]\s+/gm, '')
+      // "1. item" → drop the "1. "
+      .replace(/^\s*\d+\.\s+/gm, '')
+      // blockquote markers
+      .replace(/^\s*>\s?/gm, '')
+      // horizontal rules
+      .replace(/^\s*[-_*]{3,}\s*$/gm, '')
+      // collapse runs of whitespace
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
+  const speak = (text, opts = {}) => {
+    if (!ttsSupported || !text) return;
+    try {
+      window.speechSynthesis.cancel(); // stop anything currently being said
+      const clean = stripMarkdownForSpeech(text);
+      if (!clean) return;
+      const utter = new SpeechSynthesisUtterance(clean);
+      utter.lang = 'en-US';
+      utter.rate = 1.25;   // brisk but still clear; default 1.0 is slow for kitchen use
+      utter.pitch = 1.0;
+      utter.volume = 1.0;
+      utter.onstart = () => setSpeaking(true);
+      utter.onend = () => {
+        setSpeaking(false);
+        // Continuous conversation: reopen the mic so the user can reply
+        // without tapping anything. Skip if explicitly disabled or if
+        // there's already a listening session in flight.
+        if (opts.followUp && continuous && voiceSupported && !listening) {
+          // Small delay so the speech recognizer doesn't catch the tail
+          // of TTS audio as input
+          setTimeout(() => startListening(), 300);
+        }
+      };
+      utter.onerror = () => setSpeaking(false);
+      window.speechSynthesis.speak(utter);
+    } catch (err) {
+      console.error("TTS failed:", err);
+      setSpeaking(false);
+    }
+  };
+
+  const stopSpeaking = () => {
+    if (ttsSupported) {
+      try { window.speechSynthesis.cancel(); } catch (e) { /* noop */ }
+    }
+  };
+
+  const startListening = () => {
+    if (!voiceSupported) {
+      setVoiceError("Your browser doesn't support voice input. Try Chrome, Edge, or Safari.");
+      return;
+    }
+    if (listening) return;
+    stopSpeaking(); // don't talk over yourself
+    setVoiceError('');
+
+    try {
+      const recognition = new SpeechRecognitionImpl();
+      recognition.lang = 'en-US';
+      recognition.continuous = false;       // one utterance per tap
+      recognition.interimResults = true;    // show transcript while user is still talking
+      recognition.maxAlternatives = 1;
+
+      let finalTranscript = '';
+
+      recognition.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          if (result.isFinal) finalTranscript += result[0].transcript;
+          else interim += result[0].transcript;
+        }
+        setQuery((finalTranscript + interim).trim());
+      };
+
+      recognition.onerror = (event) => {
+        setListening(false);
+        if (event.error === 'no-speech') {
+          setVoiceError("I didn't hear anything. Tap the mic and try again.");
+        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          setVoiceError("Microphone permission denied. Allow mic access in your browser settings.");
+        } else if (event.error !== 'aborted') {
+          setVoiceError(`Voice input error: ${event.error}`);
+        }
+      };
+
+      recognition.onend = () => {
+        setListening(false);
+        // If we have a finalised transcript and auto-submit is on, send it
+        const finalText = (finalTranscript || queryRef.current || '').trim();
+        if (autoSubmit && finalText) {
+          setQuery(finalText);
+          // Defer one tick so the input state is committed
+          setTimeout(() => submitQuery(finalText), 50);
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+      setListening(true);
+    } catch (err) {
+      console.error("Could not start speech recognition:", err);
+      setVoiceError("Could not start voice input: " + (err.message || err));
+      setListening(false);
+    }
+  };
+
+  const stopListening = () => {
+    try { recognitionRef.current?.stop(); } catch (e) { /* noop */ }
+    setListening(false);
+  };
+
+  // Stop everything if the component unmounts
+  useEffect(() => {
+    return () => {
+      try { recognitionRef.current?.abort(); } catch (e) { /* noop */ }
+      stopSpeaking();
+    };
+  }, []);
+
+  const submitQuery = async (text, wasVoiceInput = false) => {
+    const q = (text || '').trim();
+    if (!q || loading) return;
+
+    const userMessage = { speaker: 'user', text: q };
     setChat(prev => [...prev, userMessage]);
     setQuery('');
     setLoading(true);
 
-    // Capture the existing database arrays safely to pass as system context
+    const currency = settings?.currency || '£';
+    const unitSystem = settings?.unitSystem || 'metric';
+    const region = settings?.region || '';
+
     const currentKitchenContextData = {
       role: settings?.role || "Staff",
+      currency,
+      unitSystem,
+      region,
       recipes: recipes || [],
       components: components || [],
       sales: sales || [],
@@ -5324,32 +5615,43 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
       planner: planner || []
     };
 
+    // Belt-and-braces: even with currency in the context object, LLMs
+    // often default to "$" out of habit. Prepending an explicit directive
+    // to the user prompt forces the model to follow the configured
+    // currency in its reply.
+    const promptDirective =
+      `[OPERATIONAL CONTEXT — DO NOT IGNORE]
+- Currency: every monetary value in your reply MUST use the symbol "${currency}". Never use $ or other currency symbols regardless of training defaults.
+- Unit system: ${unitSystem}. Use ${unitSystem === 'metric' ? 'grams, kilograms, millilitres, litres' : unitSystem === 'imperial' ? 'pounds, ounces, fluid ounces' : 'cups, pounds, fluid ounces'} when stating quantities.
+- Reply in plain prose without markdown formatting (no **bold**, no bullet asterisks, no #headings) — output will be read aloud by TTS.
+
+USER QUESTION: ${q}`;
+
     try {
-      // Connects directly to your successfully deployed edge function
       const { data, error } = await supabase.functions.invoke('sous-chat', {
-        body: { 
-          prompt: query, 
-          context: currentKitchenContextData 
-        }
+        body: { prompt: promptDirective, context: currentKitchenContextData }
       });
-
       if (error) throw error;
-
-      const systemResponse = { 
-        speaker: 'sous', 
-        text: data?.reply || "Heard. I processed the request but encountered a blank return matrix. Please try again." 
-      };
-      setChat(prev => [...prev, systemResponse]);
-
+      const replyText = data?.reply || "Heard. I processed the request but encountered a blank return matrix. Please try again.";
+      setChat(prev => [...prev, { speaker: 'sous', text: replyText }]);
+      // Speak the reply if the user asked for it via the toggle OR if they
+      // sent the question by voice (in which case they almost certainly want
+      // a voice answer back).
+      if (autoSpeak || wasVoiceInput) speak(replyText, { followUp: true });
     } catch (err) {
       console.error("Sous AI Communication Error:", err);
-      setChat(prev => [...prev, { 
-        speaker: 'sous', 
-        text: `Error connecting to AI engine: ${err.message || 'Check your edge function configuration parameters.'}` 
+      setChat(prev => [...prev, {
+        speaker: 'sous',
+        text: `Error connecting to AI engine: ${err.message || 'Check your edge function configuration parameters.'}`
       }]);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSend = (e) => {
+    e.preventDefault();
+    submitQuery(query, false);
   };
 
   return (
@@ -5359,23 +5661,65 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
         <p style={{ fontSize: 13, color: C.inkFade, margin: '4px 0 0 0' }}>Live OpenAI analysis bounded by your kitchen metrics data ledger</p>
       </div>
 
+      {/* Voice mode controls */}
+      {(voiceSupported || ttsSupported) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12, flexWrap: 'wrap', padding: '10px 12px', background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase' }}>Hands-Free</div>
+          {ttsSupported && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: C.ink, cursor: 'pointer' }}>
+              <input type="checkbox" checked={autoSpeak} onChange={e => { setAutoSpeak(e.target.checked); if (!e.target.checked) stopSpeaking(); }} />
+              🔊 Speak replies aloud
+            </label>
+          )}
+          {voiceSupported && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: C.ink, cursor: 'pointer' }}>
+              <input type="checkbox" checked={autoSubmit} onChange={e => setAutoSubmit(e.target.checked)} />
+              ⏎ Auto-send after I stop talking
+            </label>
+          )}
+          {voiceSupported && ttsSupported && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: C.ink, cursor: 'pointer' }}>
+              <input type="checkbox" checked={continuous} onChange={e => setContinuous(e.target.checked)} />
+              🔁 Continuous conversation
+            </label>
+          )}
+          {!voiceSupported && (
+            <span style={{ fontSize: 12, color: C.inkFade, fontStyle: 'italic' }}>
+              Voice input not supported in this browser. Try Chrome, Edge, or Safari.
+            </span>
+          )}
+        </div>
+      )}
+
+      {voiceError && (
+        <div style={{ background: '#5c1d1d', color: '#fff', padding: 10, borderRadius: 4, marginBottom: 12, fontSize: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>⚠ {voiceError}</span>
+          <button onClick={() => setVoiceError('')} style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 16 }}>×</button>
+        </div>
+      )}
+
       <div style={{ ...S.card, height: 500, display: "flex", flexDirection: "column", background: "#0e0e0c", color: "#f7f1e3", border: `1px solid ${C.inkRule}`, padding: 0, overflow: 'hidden' }}>
         <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14, padding: 20 }}>
           {chat.map((msg, i) => (
-            <div 
-              key={i} 
+            <div
+              key={i}
               style={{
-                alignSelf: msg.speaker === 'user' ? 'flex-end' : 'flex-start', 
-                maxWidth: "85%", 
-                background: msg.speaker === 'user' ? C.accent : '#1a1a18', 
+                alignSelf: msg.speaker === 'user' ? 'flex-end' : 'flex-start',
+                maxWidth: "85%",
+                background: msg.speaker === 'user' ? C.accent : '#1a1a18',
                 color: msg.speaker === 'user' ? '#fff' : '#efe6d3',
-                padding: "12px 16px", 
+                padding: "12px 16px",
                 border: `1px solid ${C.inkRule}`,
                 borderRadius: '4px'
               }}
             >
-              <div style={{ fontSize: 9, fontFamily: "'JetBrains Mono', monospace", color: msg.speaker === 'user' ? '#f5e9c8' : C.inkFade, marginBottom: 4, letterSpacing: '0.5px' }}>
-                {msg.speaker.toUpperCase()}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <div style={{ fontSize: 9, fontFamily: "'JetBrains Mono', monospace", color: msg.speaker === 'user' ? '#f5e9c8' : C.inkFade, letterSpacing: '0.5px' }}>
+                  {msg.speaker.toUpperCase()}
+                </div>
+                {msg.speaker === 'sous' && ttsSupported && (
+                  <button onClick={() => speak(msg.text)} title="Speak this reply" style={{ background: 'transparent', border: 'none', color: C.inkFade, cursor: 'pointer', fontSize: 13, padding: '0 4px' }}>🔊</button>
+                )}
               </div>
               <div style={{ fontSize: 13, lineHeight: 1.5 }}>
                 {msg.text}
@@ -5387,22 +5731,51 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
               SOUS IS ANALYZING SYSTEM LEDGERS...
             </div>
           )}
+          <div ref={chatEndRef} />
         </div>
 
         <form onSubmit={handleSend} style={{ display: "flex", gap: 8, borderTop: `1px solid ${C.inkRule}`, padding: 12, background: '#121210' }}>
-          <input 
-            type="text" 
-            value={query} 
-            onChange={e => setQuery(e.target.value)} 
-            placeholder={loading ? "Analyzing data context structures..." : "Ask OpenAI about recipe profits, trash leaks, or covers schedule metrics..."} 
+          {voiceSupported && (
+            <button
+              type="button"
+              onClick={listening ? stopListening : startListening}
+              disabled={loading}
+              title={listening ? 'Tap to stop listening' : 'Tap to speak'}
+              style={{
+                width: 48, height: 40, borderRadius: 4, border: 'none',
+                background: listening ? '#c14a3a' : '#2a2a26',
+                color: '#fff',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                fontSize: 18,
+                opacity: loading ? 0.5 : 1,
+                animation: listening ? 'sous-pulse 1.2s infinite' : 'none',
+                flexShrink: 0
+              }}
+            >
+              {listening ? '⏺' : '🎙'}
+            </button>
+          )}
+          <input
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder={listening ? "🎙 Listening... speak now" : (loading ? "Analyzing data context structures..." : "Ask Sous, or tap the mic to talk")}
             disabled={loading}
-            style={{ ...S.input, background: "#000", color: "#fff", border: "1px solid #2a2a26", flex: 1, opacity: loading ? 0.6 : 1 }} 
+            style={{ ...S.input, background: "#000", color: "#fff", border: listening ? "1px solid #c14a3a" : "1px solid #2a2a26", flex: 1, opacity: loading ? 0.6 : 1, minWidth: 0 }}
           />
-          <button type="submit" disabled={loading} style={{ ...S.btnAccent, padding: '0 24px', height: 40, opacity: loading ? 0.6 : 1 }}>
-            {loading ? "Thinking..." : "Ask Sous"}
+          <button type="submit" disabled={loading} style={{ ...S.btnAccent, padding: '0 24px', height: 40, opacity: loading ? 0.6 : 1, flexShrink: 0 }}>
+            {loading ? "Thinking..." : "Ask"}
           </button>
         </form>
       </div>
+
+      {/* Inline keyframes for the listening pulse */}
+      <style>{`
+        @keyframes sous-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(193, 74, 58, 0.7); }
+          50% { box-shadow: 0 0 0 8px rgba(193, 74, 58, 0); }
+        }
+      `}</style>
     </div>
   );
 }
