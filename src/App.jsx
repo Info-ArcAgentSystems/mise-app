@@ -5436,6 +5436,14 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
   const [continuous, setContinuous] = useState(false); // keep the conversation going: mic reopens after Sous finishes speaking
   const [speaking, setSpeaking] = useState(false);
   const [voiceError, setVoiceError] = useState('');
+
+  // Track viewport for mobile-specific layout of the Hands-Free controls
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 640);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   const recognitionRef = useRef(null);
   const chatEndRef = useRef(null);
   const queryRef = useRef(query); // keep the latest query in a ref for the recognition callback
@@ -5661,35 +5669,103 @@ USER QUESTION: ${q}`;
         <p style={{ fontSize: 13, color: C.inkFade, margin: '4px 0 0 0' }}>Live OpenAI analysis bounded by your kitchen metrics data ledger</p>
       </div>
 
-      {/* Voice mode controls */}
-      {(voiceSupported || ttsSupported) && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12, flexWrap: 'wrap', padding: '10px 12px', background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4 }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: C.accent, letterSpacing: 1, textTransform: 'uppercase' }}>Hands-Free</div>
-          {ttsSupported && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: C.ink, cursor: 'pointer' }}>
-              <input type="checkbox" checked={autoSpeak} onChange={e => { setAutoSpeak(e.target.checked); if (!e.target.checked) stopSpeaking(); }} />
-              🔊 Speak replies aloud
-            </label>
-          )}
-          {voiceSupported && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: C.ink, cursor: 'pointer' }}>
-              <input type="checkbox" checked={autoSubmit} onChange={e => setAutoSubmit(e.target.checked)} />
-              ⏎ Auto-send after I stop talking
-            </label>
-          )}
-          {voiceSupported && ttsSupported && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: C.ink, cursor: 'pointer' }}>
-              <input type="checkbox" checked={continuous} onChange={e => setContinuous(e.target.checked)} />
-              🔁 Continuous conversation
-            </label>
-          )}
-          {!voiceSupported && (
-            <span style={{ fontSize: 12, color: C.inkFade, fontStyle: 'italic' }}>
-              Voice input not supported in this browser. Try Chrome, Edge, or Safari.
-            </span>
-          )}
-        </div>
-      )}
+      {/* Voice mode controls — mobile-first layout with bigger touch targets */}
+      {(voiceSupported || ttsSupported) && (() => {
+        // Shared row style — stacks vertically on mobile (full-width tappable
+        // rows), inline on desktop. Big checkboxes for finger taps.
+        const rowStyle = {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          fontSize: isMobile ? 14 : 13,
+          color: C.ink,
+          cursor: 'pointer',
+          padding: isMobile ? '10px 4px' : '0',
+          borderTop: isMobile ? `1px solid ${C.paper2}` : 'none',
+          minHeight: isMobile ? 40 : 'auto'
+        };
+        const checkboxStyle = {
+          width: isMobile ? 20 : 16,
+          height: isMobile ? 20 : 16,
+          accentColor: C.accent,
+          flexShrink: 0,
+          cursor: 'pointer'
+        };
+        const firstRowStyle = { ...rowStyle, borderTop: 'none' };
+
+        return (
+          <div style={{
+            background: '#fff',
+            border: `1px solid ${C.paper2}`,
+            borderRadius: 4,
+            padding: isMobile ? '4px 12px 8px' : '10px 14px',
+            marginBottom: 12,
+            display: 'flex',
+            flexDirection: isMobile ? 'column' : 'row',
+            alignItems: isMobile ? 'stretch' : 'center',
+            gap: isMobile ? 0 : 18,
+            flexWrap: 'wrap'
+          }}>
+            <div style={{
+              fontSize: 10,
+              fontWeight: 800,
+              color: C.accent,
+              letterSpacing: 1,
+              textTransform: 'uppercase',
+              padding: isMobile ? '10px 0 6px' : 0
+            }}>
+              Hands-Free
+            </div>
+
+            {ttsSupported && (
+              <label style={firstRowStyle}>
+                <input
+                  type="checkbox"
+                  checked={autoSpeak}
+                  onChange={e => { setAutoSpeak(e.target.checked); if (!e.target.checked) stopSpeaking(); }}
+                  style={checkboxStyle}
+                />
+                <span>Speak replies aloud</span>
+              </label>
+            )}
+
+            {voiceSupported && (
+              <label style={rowStyle}>
+                <input
+                  type="checkbox"
+                  checked={autoSubmit}
+                  onChange={e => setAutoSubmit(e.target.checked)}
+                  style={checkboxStyle}
+                />
+                <span>Auto-send after I stop talking</span>
+              </label>
+            )}
+
+            {voiceSupported && ttsSupported && (
+              <label style={rowStyle}>
+                <input
+                  type="checkbox"
+                  checked={continuous}
+                  onChange={e => setContinuous(e.target.checked)}
+                  style={checkboxStyle}
+                />
+                <span>Continuous conversation</span>
+              </label>
+            )}
+
+            {!voiceSupported && (
+              <span style={{
+                fontSize: 12,
+                color: C.inkFade,
+                fontStyle: 'italic',
+                padding: isMobile ? '10px 0' : 0
+              }}>
+                Voice input not supported in this browser. Try Chrome, Edge, or Safari.
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {voiceError && (
         <div style={{ background: '#5c1d1d', color: '#fff', padding: 10, borderRadius: 4, marginBottom: 12, fontSize: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
