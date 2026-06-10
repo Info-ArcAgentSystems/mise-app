@@ -240,6 +240,108 @@ export default function App() {
     return () => { cancelled = true; window.removeEventListener('mise-db-update', onDbUpdate); };
   }, [activeKitchenId]);
 
+  // ────────────────────────────────────────────────────────────────
+  // Sub-recipe (component) library fetcher. Loads parent components
+  // joined with their nested ingredient rows in one round-trip and
+  // hydrates each component object with an `ingredients` array so
+  // downstream code (Recipes & Costs, PrepScreen, ShoppingScreen) can
+  // compute component cost-per-unit and roll it up into dish cost.
+  // ────────────────────────────────────────────────────────────────
+  const [dbComponents, setDbComponents] = useState([]);
+  const [componentsTableReady, setComponentsTableReady] = useState(true);
+  const [componentsLoadError, setComponentsLoadError] = useState('');
+  const [componentsRetryToken, setComponentsRetryToken] = useState(0);
+  useEffect(() => {
+    if (!activeKitchenId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        // ────────────────────────────────────────────────────────────
+        // Two-query approach: fetch parent components, then their
+        // ingredient rows in a separate call. This avoids depending on
+        // PostgREST having cached the foreign-key relationship between
+        // the two tables (which can take time after a fresh migration).
+        // We merge them in JS — cheap, runs in ms.
+        // ────────────────────────────────────────────────────────────
+        const { data: parents, error: pErr } = await supabase
+          .from('components')
+          .select('*')
+          .eq('kitchen_id', activeKitchenId);
+        if (cancelled) return;
+        if (pErr) {
+          const code = pErr.code || '';
+          const msg  = pErr.message || '';
+          const schemaMissing =
+            code === 'PGRST205' ||
+            code === '42P01' ||
+            /relation .* does not exist/i.test(msg) ||
+            /could not find the table/i.test(msg);
+          setComponentsLoadError(schemaMissing ? '' : (msg || 'Could not load components.'));
+          if (schemaMissing) setComponentsTableReady(false);
+          console.warn("Components parent load:", msg || pErr);
+          return;
+        }
+
+        const parentIds = (parents || []).map(p => p.id);
+        let ingredients = [];
+        if (parentIds.length > 0) {
+          const { data: ingrs, error: iErr } = await supabase
+            .from('component_ingredients')
+            .select('*')
+            .in('component_id', parentIds);
+          if (cancelled) return;
+          if (iErr) {
+            // Don't fail the whole load if just ingredients fetch errored.
+            // Surface as a banner; parents still render.
+            setComponentsLoadError(iErr.message || 'Could not load component ingredients.');
+            console.warn("Component ingredients load:", iErr.message || iErr);
+          } else if (Array.isArray(ingrs)) {
+            ingredients = ingrs;
+          }
+        }
+
+        const normalized = (parents || []).map(c => ({
+          id: c.id,
+          name: c.name,
+          station: c.station,
+          batchYield: parseFloat(c.batch_yield) || 1,
+          batchUnit: c.batch_unit || 'ea',
+          holdLife: c.hold_life || 'Same Day',
+          notes: c.notes || '',
+          ingredients: ingredients
+            .filter(i => i.component_id === c.id)
+            .sort((a, b) => (a.position || 0) - (b.position || 0))
+            .map(i => ({
+              id: i.id,
+              name: i.name,
+              qty: parseFloat(i.qty) || 0,
+              unit: i.unit || 'g',
+              cost: parseFloat(i.cost) || 0,
+              supplier: i.supplier || ''
+            }))
+        }));
+        setDbComponents(normalized);
+        setComponentsTableReady(true);
+        // Clear stale errors only on a fully successful round-trip
+        if (!ingredients || ingredients.length === 0 || parentIds.length === 0) {
+          // empty result — no error to report
+        }
+        setComponentsLoadError('');
+      } catch (err) {
+        console.error("Components load failed:", err);
+        setComponentsLoadError(err.message || String(err));
+      }
+    };
+    load();
+    const onDbUpdate = () => load();
+    window.addEventListener('mise-db-update', onDbUpdate);
+    return () => { cancelled = true; window.removeEventListener('mise-db-update', onDbUpdate); };
+  }, [activeKitchenId, componentsRetryToken]);
+
+  // Exposed to ComponentsScreen so users can manually re-attempt the load
+  // if PostgREST's schema cache was stale at first hit.
+  const retryComponentsLoad = () => setComponentsRetryToken(t => t + 1);
+
 
   useEffect(() => {
     if (!activeKitchenId) return;
@@ -373,7 +475,7 @@ const planner = plannerTableReady && dbPlanner ? dbPlanner : (Array.isArray(loca
 // prop (which arrives in a reduced shape that drops ingredient_item).
 const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : recipes);
 
-  const tabs = ['dashboard', 'servicereport', 'scan', 'archive', 'digitizer', 'recipes', 'planner', 'prep', 'sales', 'waste', 'intel', 'shopping', 'engineering', 'sous', 'settings'];
+  const tabs = ['dashboard', 'servicereport', 'scan', 'archive', 'digitizer', 'recipes', 'components', 'planner', 'prep', 'sales', 'waste', 'intel', 'shopping', 'engineering', 'sous', 'settings'];
 
   // ============================================================
   // SPEC-ALIGNED INFORMATION ARCHITECTURE (6 CORE SECTIONS)
@@ -406,6 +508,7 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
       title: "KITCHEN MANAGEMENT",
       items: [
         { id: 'recipes', label: 'Recipes & Costs', sub: 'Gross Profit engineering matrix' },
+        { id: 'components', label: 'Sub-Recipe Library', sub: 'Reusable component blueprints' },
         { id: 'planner', label: 'Weekly Planner', sub: 'Production covers allocation' },
         { id: 'prep', label: 'Prep Sheets', sub: 'Batch multiplying targets' }
       ]
@@ -598,10 +701,9 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
 
       {/* Render Active Functional Screens */}
       {/* Render Active Functional Screens */}
-      {/* Render Active Functional Screens */}
       <div style={S.main}>
-        {tab === 'dashboard' && <Dashboard recipes={recipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
-        {tab === 'servicereport' && <ServiceReport recipes={recipes || []} components={components || []} sales={sales || []} waste={waste || []} planner={planner || []} settings={settings || {}} />}
+        {tab === 'dashboard' && <Dashboard recipes={recipes} components={dbComponents} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
+        {tab === 'servicereport' && <ServiceReport recipes={recipes || []} components={dbComponents || []} sales={sales || []} waste={waste || []} planner={planner || []} settings={settings || {}} />}
         {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={handlePlannerUpdate} />}
         {/* FIX: Wired invoices state array downstream so matching costs align instantly */}
 {tab === 'recipes' && (
@@ -609,18 +711,19 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
     kitchenId={activeKitchenId || session?.user?.id || ""}
     recipes={recipes || []} 
     invoices={invoices || []} 
-    components={components || []} 
+    components={dbComponents || []} 
     settings={settings || {}} 
     onUpdateRecipes={(val) => update({ recipes: val })} 
     onUpdateComponents={(val) => update({ components: val })} 
   />
 )}
-        {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={components} />}
-        {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={groupedRecipes} components={components} />}
+        {tab === 'components' && <ComponentsScreen kitchenId={activeKitchenId || session?.user?.id || ""} components={dbComponents || []} recipes={groupedRecipes || []} settings={settings || {}} tableReady={componentsTableReady} loadError={componentsLoadError} onRetry={retryComponentsLoad} />}
+        {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={dbComponents} />}
+        {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={groupedRecipes} components={dbComponents} />}
         {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
         {tab === 'waste' && <WasteScreen waste={waste} onUpdate={(val) => update({ waste: val })} settings={settings} />}
-        {tab === 'performance' && <PerformanceScreen recipes={groupedRecipes} components={components} planner={planner} sales={sales} waste={waste} settings={settings} />}
-        {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={components} sales={sales} waste={waste} planner={planner} />}
+        {tab === 'performance' && <PerformanceScreen recipes={groupedRecipes} components={dbComponents} planner={planner} sales={sales} waste={waste} settings={settings} />}
+        {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={dbComponents} sales={sales} waste={waste} planner={planner} />}
         {tab === 'invoices' && <InvoicesScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id || ""} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
         {tab === 'suppliers' && <SuppliersScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id} settings={settings} />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
@@ -635,6 +738,17 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
           />
         )}
       </div>
+
+      {/* Floating Ask-Sous button — visible on every page so the chef can
+          fire a quick voice question without navigating away from prep work. */}
+      <QuickSousFAB
+        settings={settings || {}}
+        recipes={recipes || []}
+        components={dbComponents || []}
+        sales={sales || []}
+        waste={waste || []}
+        planner={planner || []}
+      />
     </div>
   );
 }
@@ -2370,6 +2484,794 @@ function ComponentsPanel({ components, settings }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RESILIENT SUPABASE WRITES
+// PostgREST's schema cache often lags behind a fresh migration — it can take
+// seconds to minutes for newly-added columns to become available even though
+// they exist in the database. Rather than fail the user's save, these helpers
+// retry the operation, dropping any column PostgREST complains about, until
+// it succeeds or the payload is empty.
+// ════════════════════════════════════════════════════════════════════════════
+const COLUMN_NOT_FOUND_REGEX = /Could not find the '([^']+)' column/i;
+
+async function resilientInsert(table, row, { returning = true, max = 6 } = {}) {
+  let payload = { ...row };
+  let lastError = null;
+  for (let i = 0; i < max; i++) {
+    const query = supabase.from(table).insert([payload]);
+    const { data, error } = returning ? await query.select().single() : await query;
+    if (!error) return { data, error: null };
+    lastError = error;
+    const m = (error.message || '').match(COLUMN_NOT_FOUND_REGEX);
+    if (m && Object.prototype.hasOwnProperty.call(payload, m[1])) {
+      // strip the offending column and try again
+      const dropped = m[1];
+      const next = { ...payload };
+      delete next[dropped];
+      payload = next;
+      console.warn(`[resilientInsert/${table}] Dropping column "${dropped}" (not in schema cache); retrying.`);
+      continue;
+    }
+    // Non-column error → return immediately
+    return { data: null, error };
+  }
+  return { data: null, error: lastError };
+}
+
+async function resilientUpdate(table, updates, matchKey, matchValue, { max = 6 } = {}) {
+  let payload = { ...updates };
+  let lastError = null;
+  for (let i = 0; i < max; i++) {
+    const { data, error } = await supabase.from(table).update(payload).eq(matchKey, matchValue);
+    if (!error) return { data, error: null };
+    lastError = error;
+    const m = (error.message || '').match(COLUMN_NOT_FOUND_REGEX);
+    if (m && Object.prototype.hasOwnProperty.call(payload, m[1])) {
+      const dropped = m[1];
+      const next = { ...payload };
+      delete next[dropped];
+      payload = next;
+      console.warn(`[resilientUpdate/${table}] Dropping column "${dropped}" (not in schema cache); retrying.`);
+      continue;
+    }
+    return { data: null, error };
+  }
+  return { data: null, error: lastError };
+}
+
+async function resilientInsertMany(table, rows, { max = 6 } = {}) {
+  // Strip columns globally — if any row has a missing column, drop from all rows.
+  if (!Array.isArray(rows) || rows.length === 0) return { data: [], error: null };
+  let workingRows = rows.map(r => ({ ...r }));
+  let lastError = null;
+  for (let i = 0; i < max; i++) {
+    const { data, error } = await supabase.from(table).insert(workingRows);
+    if (!error) return { data, error: null };
+    lastError = error;
+    const m = (error.message || '').match(COLUMN_NOT_FOUND_REGEX);
+    if (m) {
+      const dropped = m[1];
+      const before = workingRows.length;
+      workingRows = workingRows.map(r => {
+        const copy = { ...r };
+        delete copy[dropped];
+        return copy;
+      });
+      if (workingRows.length === before) {
+        console.warn(`[resilientInsertMany/${table}] Dropped column "${dropped}" from ${before} rows; retrying.`);
+      }
+      continue;
+    }
+    return { data: null, error };
+  }
+  return { data: null, error: lastError };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SUB-RECIPE LIBRARY — manages the components table.
+// A "component" is a reusable sub-recipe (e.g. Beef Stock, Béchamel, Curry
+// Paste) prepped in batch with its own yield. Dishes reference components
+// by ID and consume them by-the-unit; cost flows from raw inputs → component
+// cost-per-unit → dish line cost. This screen reads dbComponents (hydrated
+// at App level) and writes back via Supabase. The "Used by" column reverse-
+// looks up which dishes consume each component.
+// ════════════════════════════════════════════════════════════════════════════
+function ComponentsScreen({ kitchenId, components = [], recipes = [], settings = {}, tableReady = true, loadError = '', onRetry = null }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+  const [showScan, setShowScan] = useState(false);
+  const [scanPrefill, setScanPrefill] = useState(null);
+  const [showEdit, setShowEdit] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const currency = settings?.currency || '£';
+
+  const selected = useMemo(
+    () => components.find(c => c.id === selectedId) || null,
+    [components, selectedId]
+  );
+
+  // Reverse lookup: which dishes consume this component?
+  const usedBy = useMemo(() => {
+    if (!selected) return [];
+    const out = [];
+    (recipes || []).forEach(r => {
+      const ings = r.ingredients || [];
+      const matches = ings.some(i =>
+        (i.kind === 'comp' || i.kind === 'sub') &&
+        (i.componentId === selected.id ||
+         (i.name && i.name.toLowerCase() === (selected.name || '').toLowerCase()))
+      );
+      if (matches) out.push(r.name);
+    });
+    return Array.from(new Set(out));
+  }, [recipes, selected]);
+
+  const fireDbUpdate = () => window.dispatchEvent(new CustomEvent('mise-db-update'));
+
+  // ---- CREATE ----
+  const handleCreate = async (draft) => {
+    if (!kitchenId) { alert("No active kitchen."); return; }
+    setBusy(true);
+    try {
+      const { data: parent, error: pErr } = await resilientInsert('components', {
+        kitchen_id: kitchenId,
+        name: draft.name,
+        station: draft.station || 'Sauce',
+        batch_yield: parseFloat(draft.batchYield) || 1,
+        batch_unit: draft.batchUnit || 'ea',
+        hold_life: draft.holdLife || 'Same Day',
+        notes: draft.notes || ''
+        // Audit columns intentionally left out; if you want them tracked once
+        // your schema cache stabilizes, add created_by/last_edited_by here.
+      });
+      if (pErr) throw pErr;
+      if (parent && Array.isArray(draft.ingredients) && draft.ingredients.length > 0) {
+        const rows = draft.ingredients
+          .filter(i => i.name && i.name.trim())
+          .map((i, idx) => ({
+            component_id: parent.id,
+            kitchen_id: kitchenId, // some schemas require this NOT NULL; strip-on-fail handles cases where the column doesn't exist
+            name: i.name.trim(),
+            qty: parseFloat(i.qty) || 0,
+            unit: i.unit || 'g',
+            cost: parseFloat(i.cost) || 0,
+            supplier: i.supplier || '',
+            position: idx
+          }));
+        if (rows.length > 0) {
+          const { error: iErr } = await resilientInsertMany('component_ingredients', rows);
+          if (iErr) throw iErr;
+        }
+      }
+      fireDbUpdate();
+      setShowNew(false);
+      if (parent?.id) setSelectedId(parent.id);
+    } catch (err) {
+      const msg = err.message || String(err);
+      if (/schema cache|column/i.test(msg)) {
+        alert(
+          "Could not save: Supabase's schema cache is still catching up.\n\n" +
+          "Try one of these:\n" +
+          "  1. Wait 30 seconds and try again, OR\n" +
+          "  2. In Supabase Dashboard: Settings → API → 'Reload schema'\n\n" +
+          "Technical detail: " + msg
+        );
+      } else {
+        alert("Could not save component: " + msg);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---- UPDATE ----
+  const handleUpdate = async (draft) => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const { error: pErr } = await resilientUpdate('components', {
+        name: draft.name,
+        station: draft.station || 'Sauce',
+        batch_yield: parseFloat(draft.batchYield) || 1,
+        batch_unit: draft.batchUnit || 'ea',
+        hold_life: draft.holdLife || 'Same Day',
+        notes: draft.notes || ''
+      }, 'id', selected.id);
+      if (pErr) throw pErr;
+
+      // Wipe & re-insert ingredients (simple + reliable; volume is low)
+      await supabase.from('component_ingredients').delete().eq('component_id', selected.id);
+      if (Array.isArray(draft.ingredients) && draft.ingredients.length > 0) {
+        const rows = draft.ingredients
+          .filter(i => i.name && i.name.trim())
+          .map((i, idx) => ({
+            component_id: selected.id,
+            kitchen_id: kitchenId, // matches the NOT NULL constraint on some schemas
+            name: i.name.trim(),
+            qty: parseFloat(i.qty) || 0,
+            unit: i.unit || 'g',
+            cost: parseFloat(i.cost) || 0,
+            supplier: i.supplier || '',
+            position: idx
+          }));
+        if (rows.length > 0) {
+          const { error: iErr } = await resilientInsertMany('component_ingredients', rows);
+          if (iErr) throw iErr;
+        }
+      }
+      fireDbUpdate();
+      setShowEdit(false);
+    } catch (err) {
+      alert("Could not update component: " + (err.message || err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---- DELETE ----
+  const handleDelete = async () => {
+    if (!selected) return;
+    if (!window.confirm(`Delete sub-recipe "${selected.name}"? This cannot be undone.`)) return;
+    if (usedBy.length > 0) {
+      if (!window.confirm(`This component is used by ${usedBy.length} dish(es): ${usedBy.join(', ')}. Delete anyway?`)) return;
+    }
+    setBusy(true);
+    try {
+      // ON DELETE CASCADE handles component_ingredients automatically
+      const { error } = await supabase.from('components').delete().eq('id', selected.id);
+      if (error) throw error;
+      fireDbUpdate();
+      setSelectedId(null);
+    } catch (err) {
+      alert("Could not delete: " + (err.message || err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---- TABLE NOT READY GUIDANCE ----
+  if (!tableReady) {
+    return (
+      <div style={S.container}>
+        <ScreenHeader title="Sub-Recipe Library" sub="Reusable component blueprints with cost rollup into dish recipes" />
+        <div style={{ ...S.card, padding: 24, textAlign: 'center' }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
+          <h3 style={{ fontFamily: "'Bitter', serif", fontSize: 18, marginBottom: 10 }}>Sub-Recipe tables not detected</h3>
+          <p style={{ fontSize: 13, color: C.inkFade, marginBottom: 14, lineHeight: 1.6 }}>
+            If you've just run <code style={{ background: C.paper2, padding: '2px 6px', borderRadius: 3 }}>05_components_migration.sql</code>, Supabase's schema cache may still be refreshing — give it a few seconds and tap Retry.
+          </p>
+          <p style={{ fontSize: 12, color: C.inkFade, marginBottom: 18 }}>
+            Otherwise, run the migration in your Supabase SQL editor, then come back here and tap Retry.
+          </p>
+          <button onClick={onRetry} style={S.btnAccent}>↻ Retry Connection</button>
+          {loadError && (
+            <div style={{ marginTop: 18, padding: 10, background: '#3a1414', color: '#fcd9c9', fontSize: 11, borderRadius: 4, fontFamily: "'JetBrains Mono', monospace" }}>
+              Last error: {loadError}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.container}>
+      <ScreenHeader title="Sub-Recipe Library" sub="Reusable component blueprints — cost flows into dish recipes automatically" />
+
+      {loadError && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#5c1d1d', color: '#fff', padding: '10px 14px', borderRadius: 4, marginBottom: 12, fontSize: 12 }}>
+          <span>⚠ {loadError}</span>
+          {onRetry && <button onClick={onRetry} style={{ ...S.btn, color: '#fff', borderColor: '#fff', background: 'transparent' }}>Retry</button>}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ fontSize: 12, color: C.inkFade }}>
+          <strong style={{ color: C.ink, fontFamily: "'JetBrains Mono', monospace" }}>{components.length}</strong> component{components.length === 1 ? '' : 's'} in library
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button onClick={() => setShowScan(true)} style={{ ...S.btn, background: C.paper2 }}>📷 Scan Sub-Recipe</button>
+          <button onClick={() => setShowNew(true)} style={S.btnAccent}>+ New Sub-Recipe</button>
+        </div>
+      </div>
+
+      {components.length === 0 ? (
+        <div style={{ ...S.card, padding: 24, textAlign: 'center' }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>🍲</div>
+          <h3 style={{ fontFamily: "'Bitter', serif", fontSize: 18, marginBottom: 8 }}>No sub-recipes yet</h3>
+          <p style={{ fontSize: 13, color: C.inkFade, marginBottom: 14 }}>
+            Build reusable components like Beef Stock, Béchamel, or Curry Paste once — then reference them across multiple dishes. Cost rolls up automatically.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button onClick={() => setShowScan(true)} style={S.btn}>📷 Scan from cookbook</button>
+            <button onClick={() => setShowNew(true)} style={S.btnAccent}>+ Create manually</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
+          {components.map(c => {
+            const cpu = componentCostPerUnit(c);
+            const batchCost = cpu * (parseFloat(c.batchYield) || 0);
+            const isSelected = c.id === selectedId;
+            return (
+              <div
+                key={c.id}
+                onClick={() => setSelectedId(isSelected ? null : c.id)}
+                style={{
+                  ...S.card,
+                  cursor: 'pointer',
+                  borderColor: isSelected ? C.accent : (S.card.border ? S.card.border.split(' ').pop() : C.inkRule),
+                  borderWidth: isSelected ? 2 : 1,
+                  padding: 16,
+                  transition: 'border-color 0.15s'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 8 }}>
+                  <span style={{ fontSize: 9, fontFamily: "'JetBrains Mono', monospace", background: C.ink, color: C.paper, padding: '2px 6px', letterSpacing: 0.5 }}>
+                    {c.station || 'Sauce'}
+                  </span>
+                  <span style={{ fontSize: 10, color: C.inkFade }}>{c.holdLife || 'Same Day'}</span>
+                </div>
+                <h3 style={{ fontFamily: "'Bitter', serif", fontSize: 17, fontWeight: 900, margin: '4px 0 12px 0' }}>{c.name}</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px dashed ${C.paper2}`, paddingTop: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: C.inkFade, textTransform: 'uppercase', letterSpacing: 0.5 }}>Batch Yield</div>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 14 }}>
+                      {c.batchYield}{c.batchUnit}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: C.inkFade, textTransform: 'uppercase', letterSpacing: 0.5 }}>Per {c.batchUnit}</div>
+                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 14, color: C.accent }}>
+                      {currency}{cpu.toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 11, color: C.inkFade }}>
+                  Batch total: <strong style={{ color: C.ink, fontFamily: "'JetBrains Mono', monospace" }}>{currency}{batchCost.toFixed(2)}</strong> · {(c.ingredients || []).length} ingredient{(c.ingredients || []).length === 1 ? '' : 's'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Detail panel — shows when a card is clicked */}
+      {selected && (
+        <div style={{ ...S.card, marginTop: 18, padding: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 10, color: C.accent, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase' }}>Selected Component</div>
+              <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 22, margin: '4px 0' }}>{selected.name}</h2>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setShowEdit(true)} disabled={busy} style={S.btn}>✎ Edit</button>
+              <button onClick={handleDelete} disabled={busy} style={{ ...S.btn, color: '#a13e2a', borderColor: '#a13e2a' }}>🗑 Delete</button>
+              <button onClick={() => setSelectedId(null)} style={{ ...S.btn, color: C.inkFade }}>Close</button>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <SectionLabel label="Recipe Composition" />
+            {(selected.ingredients || []).length === 0 ? (
+              <p style={{ fontSize: 12, color: C.inkFade, fontStyle: 'italic', margin: '6px 0' }}>No ingredients defined yet. Click Edit to add them.</p>
+            ) : (
+              <div style={{ overflowX: 'auto', marginTop: 8 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${C.inkRule}`, textAlign: 'left' }}>
+                      <th style={{ padding: '6px 8px' }}>Ingredient</th>
+                      <th style={{ padding: '6px 8px' }}>Qty</th>
+                      <th style={{ padding: '6px 8px' }}>Unit</th>
+                      <th style={{ padding: '6px 8px' }}>{currency}/Unit</th>
+                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Line</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(selected.ingredients || []).map((i, idx) => {
+                      const line = (parseFloat(i.qty) || 0) * (parseFloat(i.cost) || 0);
+                      return (
+                        <tr key={idx} style={{ borderBottom: `1px solid ${C.paper2}` }}>
+                          <td style={{ padding: '6px 8px' }}>{i.name}</td>
+                          <td style={{ padding: '6px 8px', fontFamily: "'JetBrains Mono', monospace" }}>{i.qty}</td>
+                          <td style={{ padding: '6px 8px' }}>{i.unit}</td>
+                          <td style={{ padding: '6px 8px', fontFamily: "'JetBrains Mono', monospace" }}>{currency}{(parseFloat(i.cost) || 0).toFixed(2)}</td>
+                          <td style={{ padding: '6px 8px', fontFamily: "'JetBrains Mono', monospace", textAlign: 'right' }}>{currency}{line.toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, borderTop: `1px dashed ${C.paper2}`, paddingTop: 12 }}>
+            <KPI label="Batch Cost" value={`${currency}${(componentCostPerUnit(selected) * (parseFloat(selected.batchYield) || 0)).toFixed(2)}`} />
+            <KPI label={`Cost per ${selected.batchUnit}`} value={`${currency}${componentCostPerUnit(selected).toFixed(2)}`} />
+            <KPI label="Used By" value={`${usedBy.length} dish${usedBy.length === 1 ? '' : 'es'}`} />
+          </div>
+
+          {usedBy.length > 0 && (
+            <div style={{ marginTop: 14, borderTop: `1px dashed ${C.paper2}`, paddingTop: 12 }}>
+              <SectionLabel label="Consumed By" />
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {usedBy.map(dish => (
+                  <span key={dish} style={{ fontSize: 11, padding: '3px 8px', background: C.paper2, borderRadius: 12, fontWeight: 600 }}>{dish}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showNew && (
+        <ComponentEditorModal
+          title={scanPrefill ? "Review Scanned Sub-Recipe" : "+ New Sub-Recipe"}
+          settings={settings}
+          initial={scanPrefill}
+          onClose={() => { setShowNew(false); setScanPrefill(null); }}
+          onSave={async (draft) => { await handleCreate(draft); setScanPrefill(null); }}
+          busy={busy}
+        />
+      )}
+      {showEdit && selected && (
+        <ComponentEditorModal
+          title={`Edit "${selected.name}"`}
+          settings={settings}
+          initial={selected}
+          onClose={() => setShowEdit(false)}
+          onSave={handleUpdate}
+          busy={busy}
+        />
+      )}
+      {showScan && (
+        <ScanSubRecipeModal
+          settings={settings}
+          onClose={() => setShowScan(false)}
+          onScanComplete={(parsed) => {
+            // Scanner finished → close the scanner, open the editor pre-filled
+            // with parsed data so the user can review/adjust before saving.
+            setShowScan(false);
+            // Stash parsed data into a temporary "initial" then open the new
+            // modal in scan-prefill mode by piggybacking on showNew.
+            setScanPrefill(parsed);
+            setShowNew(true);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Small KPI tile used inside the component detail panel
+// ────────────────────────────────────────────────────────────────────────────
+function KPI({ label, value }) {
+  return (
+    <div style={{ padding: '10px 12px', background: C.paper2, borderRadius: 4 }}>
+      <div style={{ fontSize: 10, color: C.inkFade, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 16, marginTop: 4 }}>{value}</div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Modal for creating & editing a component blueprint + its ingredient list
+// ────────────────────────────────────────────────────────────────────────────
+function ComponentEditorModal({ title, settings, initial, onClose, onSave, busy }) {
+  const currency = settings?.currency || '£';
+  const unitOptions = (settings?.unitSystem === 'imperial')
+    ? ['lb', 'oz', 'pt', 'fl oz', 'ea']
+    : (settings?.unitSystem === 'us')
+    ? ['lb', 'oz', 'qt', 'fl oz', 'ea']
+    : ['kg', 'g', 'L', 'ml', 'ea'];
+
+  const [name, setName] = useState(initial?.name || '');
+  const [station, setStation] = useState(initial?.station || 'Sauce');
+  const [batchYield, setBatchYield] = useState(initial?.batchYield ?? 1);
+  const [batchUnit, setBatchUnit] = useState(initial?.batchUnit || 'L');
+  const [holdLife, setHoldLife] = useState(initial?.holdLife || 'Same Day');
+  const [ingredients, setIngredients] = useState(
+    initial?.ingredients?.length
+      ? initial.ingredients.map(i => ({ ...i }))
+      : [{ name: '', qty: '', unit: 'g', cost: '' }]
+  );
+
+  const addRow = () => setIngredients(prev => [...prev, { name: '', qty: '', unit: 'g', cost: '' }]);
+  const removeRow = (idx) => setIngredients(prev => prev.filter((_, i) => i !== idx));
+  const updateRow = (idx, key, val) => {
+    setIngredients(prev => prev.map((row, i) => i === idx ? { ...row, [key]: val } : row));
+  };
+
+  const previewCost = useMemo(() => {
+    const total = ingredients.reduce((s, i) => s + (parseFloat(i.qty) || 0) * (parseFloat(i.cost) || 0), 0);
+    const y = parseFloat(batchYield) || 1;
+    return { batchCost: total, perUnit: total / y };
+  }, [ingredients, batchYield]);
+
+  const submit = () => {
+    if (!name.trim()) { alert("Component name is required."); return; }
+    onSave({
+      name: name.trim(),
+      station,
+      batchYield,
+      batchUnit,
+      holdLife,
+      ingredients
+    });
+  };
+
+  return (
+    <div style={S.modalOverlay}>
+      <div style={{ ...S.modal, maxWidth: 720, width: '94%', maxHeight: '90vh', overflowY: 'auto' }}>
+        <h2 style={{ fontFamily: "'Bitter', serif", marginBottom: 14, fontSize: 22 }}>{title}</h2>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 12 }}>
+          <FormField label="Name" val={name} onChange={setName} />
+          <FormField label="Station" val={station} onChange={setStation} />
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4, textTransform: 'uppercase' }}>Hold Life</label>
+            <select value={holdLife} onChange={e => setHoldLife(e.target.value)} style={S.input}>
+              <option>Same Day</option>
+              <option>2 Days</option>
+              <option>3 Days</option>
+              <option>1 Week</option>
+              <option>2 Weeks</option>
+              <option>1 Month</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 2 }}>
+            <FormField label="Batch Yield" val={batchYield} onChange={setBatchYield} type="number" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4, textTransform: 'uppercase' }}>Batch Unit</label>
+            <select value={batchUnit} onChange={e => setBatchUnit(e.target.value)} style={S.input}>
+              {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ borderTop: `1px dashed ${C.paper2}`, paddingTop: 12, marginBottom: 10 }}>
+          <SectionLabel label="Ingredients (raw inputs to this batch)" />
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+          {ingredients.map((row, idx) => (
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '2fr 70px 80px 90px auto', gap: 6, alignItems: 'center' }}>
+              <input
+                type="text"
+                placeholder="Ingredient name"
+                value={row.name}
+                onChange={e => updateRow(idx, 'name', e.target.value)}
+                style={{ ...S.input, padding: '6px 8px', fontSize: 12 }}
+              />
+              <input
+                type="number"
+                placeholder="Qty"
+                value={row.qty}
+                onChange={e => updateRow(idx, 'qty', e.target.value)}
+                style={{ ...S.input, padding: '6px 8px', fontSize: 12 }}
+              />
+              <select
+                value={row.unit}
+                onChange={e => updateRow(idx, 'unit', e.target.value)}
+                style={{ ...S.input, padding: '6px 8px', fontSize: 12 }}
+              >
+                {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+              <input
+                type="number"
+                step="0.01"
+                placeholder={`${currency}/unit`}
+                value={row.cost}
+                onChange={e => updateRow(idx, 'cost', e.target.value)}
+                style={{ ...S.input, padding: '6px 8px', fontSize: 12 }}
+              />
+              <button
+                onClick={() => removeRow(idx)}
+                disabled={ingredients.length === 1}
+                style={{ background: 'transparent', border: 'none', color: ingredients.length === 1 ? C.inkFade : '#a13e2a', cursor: ingredients.length === 1 ? 'not-allowed' : 'pointer', fontSize: 16, padding: '0 4px' }}
+                title="Remove this row"
+              >×</button>
+            </div>
+          ))}
+          <button onClick={addRow} style={{ ...S.btn, marginTop: 4, fontSize: 12 }}>+ Add ingredient row</button>
+        </div>
+
+        <div style={{ background: C.paper2, padding: '10px 14px', borderRadius: 4, marginBottom: 14, fontSize: 12 }}>
+          <strong>Live cost preview:</strong> Batch total {currency}{previewCost.batchCost.toFixed(2)} · Per {batchUnit} <span style={{ color: C.accent, fontWeight: 700 }}>{currency}{previewCost.perUnit.toFixed(2)}</span>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} disabled={busy} style={S.btn}>Cancel</button>
+          <button onClick={submit} disabled={busy} style={S.btnAccent}>{busy ? 'Saving…' : 'Save Component'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// SCAN SUB-RECIPE MODAL — photographs a sub-recipe from a cookbook / handwritten
+// card, runs OCR via the existing `parse-recipe` edge function, then hands the
+// parsed payload off to the ComponentEditorModal for review and save.
+// ────────────────────────────────────────────────────────────────────────────
+function ScanSubRecipeModal({ settings, onClose, onScanComplete }) {
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState('');
+  const [parsing, setParsing] = useState(false);
+  const [error, setError] = useState('');
+  const fileInputRef = useRef(null);
+
+  const handleFile = (f) => {
+    if (!f) return;
+    setFile(f);
+    setError('');
+    const reader = new FileReader();
+    reader.onload = (e) => setPreview(e.target.result);
+    reader.readAsDataURL(f);
+  };
+
+  const runOcr = async () => {
+    if (!file) {
+      setError("Please attach or take a photo first.");
+      return;
+    }
+    setParsing(true);
+    setError('');
+    try {
+      // Convert image → base64 (mirrors the Recipe Digitizer pipeline)
+      const base64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1]);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+      const fileExt = (file.name || 'jpg').split('.').pop();
+
+      // Reuse the same edge function as the main Recipe Digitizer — the OCR
+      // output is structurally identical (name + ingredients), we just route
+      // it to the components table afterwards.
+      const { data: result, error: fnErr } = await supabase.functions
+        .invoke('parse-recipe', {
+          body: { image: base64, fileType: fileExt, currentRecipes: [] }
+        });
+      if (fnErr) throw fnErr;
+      const parsed = result?.recipe || result?.data || result;
+      if (!parsed) throw new Error("Empty response from the OCR engine.");
+
+      // Map parsed output → component draft shape
+      const name = parsed.recipe_name || parsed.name || parsed.title || 'Untitled sub-recipe';
+      const yieldRaw = parsed.yield || parsed.yields || parsed.portions || '1';
+      // Try to extract numeric yield and unit (e.g. "5 L", "2 kg", "10 portions")
+      const yieldMatch = String(yieldRaw).match(/(\d+(?:\.\d+)?)\s*([a-zA-Z]+)?/);
+      const batchYield = yieldMatch ? parseFloat(yieldMatch[1]) : 1;
+      const detectedUnit = yieldMatch?.[2]?.toLowerCase() || '';
+      const unitMap = {
+        l: 'L', ltr: 'L', liter: 'L', litre: 'L', liters: 'L', litres: 'L',
+        kg: 'kg', kilo: 'kg', kilos: 'kg', kilogram: 'kg', kilograms: 'kg',
+        g: 'g', gram: 'g', grams: 'g',
+        ml: 'ml', milliliter: 'ml', millilitre: 'ml',
+        ea: 'ea', each: 'ea', piece: 'ea', pieces: 'ea',
+        portion: 'ea', portions: 'ea', serving: 'ea', servings: 'ea'
+      };
+      const batchUnit = unitMap[detectedUnit] || 'L';
+
+      // Normalize ingredients — may come back as strings or objects
+      const rawIngs = parsed.ingredients || parsed.line_items || parsed.items || [];
+      const ingredients = rawIngs.map(ing => {
+        if (typeof ing === 'string') {
+          // Try to parse "100g flour" or "2 tbsp butter"
+          const m = ing.match(/^([\d.]+)\s*([a-zA-Z]+)?\s+(.+)$/);
+          if (m) {
+            return {
+              name: m[3].trim(),
+              qty: parseFloat(m[1]) || 0,
+              unit: unitMap[m[2]?.toLowerCase()] || m[2] || 'g',
+              cost: 0
+            };
+          }
+          return { name: ing, qty: 0, unit: 'g', cost: 0 };
+        }
+        return {
+          name: ing.name || ing.ingredient || ing.item || '',
+          qty: parseFloat(ing.qty || ing.quantity || ing.amount) || 0,
+          unit: ing.unit || ing.uom || 'g',
+          cost: parseFloat(ing.cost || ing.price || 0) || 0
+        };
+      }).filter(i => i.name);
+
+      onScanComplete({
+        name,
+        station: 'Sauce',
+        batchYield,
+        batchUnit,
+        holdLife: 'Same Day',
+        ingredients: ingredients.length > 0 ? ingredients : [{ name: '', qty: '', unit: 'g', cost: '' }]
+      });
+    } catch (err) {
+      console.error("Scan sub-recipe OCR failed:", err);
+      setError(
+        (err.message || 'OCR failed.') +
+        " — make sure the 'parse-recipe' edge function is deployed. You can still create the sub-recipe manually."
+      );
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  return (
+    <div style={S.modalOverlay}>
+      <div style={{ ...S.modal, maxWidth: 560, width: '94%', maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 22, margin: 0 }}>📷 Scan Sub-Recipe</h2>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', fontSize: 22, cursor: 'pointer', color: C.inkFade }}>×</button>
+        </div>
+
+        <p style={{ fontSize: 12, color: C.inkFade, lineHeight: 1.6, marginBottom: 14 }}>
+          Photograph a sub-recipe from a cookbook, recipe card, or handwritten note. The OCR engine will extract the title, yield, and ingredients. You'll review and adjust before saving.
+        </p>
+
+        {/* File picker / preview */}
+        {!preview ? (
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              border: `2px dashed ${C.inkFade}`,
+              borderRadius: 6,
+              padding: '40px 20px',
+              textAlign: 'center',
+              cursor: 'pointer',
+              background: C.paper2,
+              marginBottom: 14
+            }}
+          >
+            <div style={{ fontSize: 42, marginBottom: 10 }}>📷</div>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Tap to take a photo or upload</div>
+            <div style={{ fontSize: 11, color: C.inkFade }}>JPEG, PNG, or HEIC accepted</div>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 14 }}>
+            <img src={preview} alt="Sub-recipe preview" style={{ maxWidth: '100%', maxHeight: 280, borderRadius: 4, border: `1px solid ${C.paper2}` }} />
+            <button
+              onClick={() => { setPreview(''); setFile(null); }}
+              style={{ ...S.btn, marginTop: 8, fontSize: 12 }}
+            >
+              Replace photo
+            </button>
+          </div>
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={(e) => handleFile(e.target.files?.[0])}
+          style={{ display: 'none' }}
+        />
+
+        {error && (
+          <div style={{ background: '#5c1d1d', color: '#fff', padding: 10, borderRadius: 4, marginBottom: 12, fontSize: 12 }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px dashed ${C.paper2}`, paddingTop: 14 }}>
+          <button onClick={onClose} disabled={parsing} style={S.btn}>Cancel</button>
+          <button onClick={runOcr} disabled={!file || parsing} style={S.btnAccent}>
+            {parsing ? 'Reading…' : '▶ Run OCR Extraction'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5310,6 +6212,62 @@ const getUnits = (sys) => {
   return ['kg', 'g', 'L', 'ml', 'ea'];
 };
 
+// ════════════════════════════════════════════════════════════════════════════
+// VOICE SELECTION — picks the most natural-sounding TTS voice available.
+// Browser voice quality varies wildly: Google's "Natural" voices on Chrome
+// and Microsoft's "Neural" voices on Edge sound near-human; the OS defaults
+// are notably robotic. This walks a preference list looking for the best
+// match the user's device offers, falling back gracefully.
+// ════════════════════════════════════════════════════════════════════════════
+const TTS_VOICE_STORAGE_KEY = 'mise:sous:voice';
+
+const pickBestVoice = (preferredName = null) => {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return null;
+
+  // 1. Honour an explicit user pick if it's still available.
+  if (preferredName) {
+    const exact = voices.find(v => v.name === preferredName);
+    if (exact) return exact;
+  }
+
+  // 2. Otherwise scan a priority list of high-quality English voices.
+  //    Each entry is tested against voice.name (case-insensitive). The
+  //    first match wins.
+  const priorityPatterns = [
+    /Google.*UK.*English.*Female/i,    // Chrome: best UK female voice
+    /Google.*UK.*English/i,             // Chrome: UK English (any gender)
+    /Google.*US.*English/i,             // Chrome: US English fallback
+    /Microsoft.*Aria.*Online/i,         // Edge: neural female US
+    /Microsoft.*Sonia.*Online/i,        // Edge: neural female UK
+    /Microsoft.*Libby.*Online/i,        // Edge: neural female UK
+    /Microsoft.*Ryan.*Online/i,         // Edge: neural male UK
+    /Microsoft.*Guy.*Online/i,          // Edge: neural male US
+    /Natural|Neural/i,                  // Generic neural voice tag
+    /Samantha/i,                        // macOS: high-quality US female
+    /Daniel/i,                          // macOS: UK male
+    /Karen/i,                           // macOS: Australian female
+    /Moira/i,                           // macOS: Irish female
+    /Tessa/i                            // macOS: South African female
+  ];
+
+  for (const pattern of priorityPatterns) {
+    const match = voices.find(v =>
+      pattern.test(v.name) && (v.lang || '').toLowerCase().startsWith('en')
+    );
+    if (match) return match;
+  }
+
+  // 3. Final fallback: any English voice, preferring en-GB then en-US.
+  return (
+    voices.find(v => (v.lang || '').toLowerCase().startsWith('en-gb')) ||
+    voices.find(v => (v.lang || '').toLowerCase().startsWith('en-us')) ||
+    voices.find(v => (v.lang || '').toLowerCase().startsWith('en')) ||
+    voices[0]
+  );
+};
+
 const componentCostPerUnit = (comp) => {
   if(!comp) return 0;
   const total = (comp.ingredients || []).reduce((s, i) => s + ((i.qty || 0) * (i.cost || 0)), 0);
@@ -5413,6 +6371,382 @@ const DEMO_RECIPE_SCAN = {
 
 
 
+// ════════════════════════════════════════════════════════════════════════════
+// QUICK SOUS FAB — floating button + mini-chat overlay, available on every
+// page. Lets the chef fire a quick voice question without leaving the
+// current tab. Uses the same sous-chat edge function as SousScreen but
+// keeps its own ephemeral conversation state (doesn't persist between
+// sessions — that's what the full Sous tab is for).
+// ════════════════════════════════════════════════════════════════════════════
+function QuickSousFAB({ settings, recipes, components, sales, waste, planner }) {
+  const [open, setOpen] = useState(false);
+  const [chat, setChat] = useState([]);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [listening, setListening] = useState(false);
+
+  // Browser API support detection
+  const SR = typeof window !== 'undefined'
+    ? (window.SpeechRecognition || window.webkitSpeechRecognition)
+    : null;
+  const voiceSupported = !!SR;
+  const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+
+  const recognitionRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const queryRef = useRef(query);
+  useEffect(() => { queryRef.current = query; }, [query]);
+
+  // Auto-scroll the mini chat as messages arrive
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [chat, loading]);
+
+  // Reuse the same markdown stripper from SousScreen logic
+  const stripMd = (text) => {
+    if (!text) return '';
+    return String(text)
+      .replace(/\*\*([\s\S]+?)\*\*/g, '$1')
+      .replace(/__([\s\S]+?)__/g, '$1')
+      .replace(/\*([^*\n]+)\*/g, '$1')
+      .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '$1')
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/^\s*\d+\.\s+/gm, '')
+      .replace(/^\s*>\s?/gm, '')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
+  const speak = (text) => {
+    if (!ttsSupported || !text) return;
+    try {
+      window.speechSynthesis.cancel();
+      const clean = stripMd(text);
+      if (!clean) return;
+      const utter = new SpeechSynthesisUtterance(clean);
+      let storedName = '';
+      try { storedName = localStorage.getItem(TTS_VOICE_STORAGE_KEY) || ''; } catch {}
+      const voice = pickBestVoice(storedName);
+      if (voice) { utter.voice = voice; utter.lang = voice.lang || 'en-US'; }
+      else utter.lang = 'en-US';
+      utter.rate = 1.15;
+      window.speechSynthesis.speak(utter);
+    } catch (err) {
+      console.error("Quick Sous TTS failed:", err);
+    }
+  };
+
+  const startListening = () => {
+    if (!voiceSupported || listening) return;
+    try {
+      const rec = new SR();
+      rec.lang = 'en-US';
+      rec.continuous = false;
+      rec.interimResults = true;
+      let finalText = '';
+      rec.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+          else interim += e.results[i][0].transcript;
+        }
+        setQuery((finalText + interim).trim());
+      };
+      rec.onerror = () => setListening(false);
+      rec.onend = () => {
+        setListening(false);
+        const t = (finalText || queryRef.current || '').trim();
+        if (t) {
+          setQuery(t);
+          setTimeout(() => submitQuery(t), 50);
+        }
+      };
+      recognitionRef.current = rec;
+      rec.start();
+      setListening(true);
+    } catch (err) {
+      console.error("Quick Sous mic failed:", err);
+      setListening(false);
+    }
+  };
+
+  const stopListening = () => {
+    try { recognitionRef.current?.stop(); } catch {}
+    setListening(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      try { recognitionRef.current?.abort(); } catch {}
+      if (ttsSupported) {
+        try { window.speechSynthesis.cancel(); } catch {}
+      }
+    };
+  }, []);
+
+  const submitQuery = async (text) => {
+    const q = (text || '').trim();
+    if (!q || loading) return;
+    setChat(prev => [...prev, { speaker: 'user', text: q }]);
+    setQuery('');
+    setLoading(true);
+
+    const currency = settings?.currency || '£';
+    const unitSystem = settings?.unitSystem || 'metric';
+    const ctx = {
+      role: settings?.role || 'Staff',
+      currency,
+      unitSystem,
+      recipes: recipes || [],
+      components: components || [],
+      sales: sales || [],
+      waste: waste || [],
+      planner: planner || []
+    };
+    const promptDirective =
+      `[OPERATIONAL CONTEXT — DO NOT IGNORE]
+- Currency: every monetary value in your reply MUST use "${currency}". Never use $ unless that IS the symbol.
+- Unit system: ${unitSystem}.
+- Reply in plain prose without markdown formatting — output will be read aloud.
+- Keep replies SHORT (1-3 sentences) since this is a quick on-the-fly question from a chef during prep.
+
+USER QUESTION: ${q}`;
+
+    try {
+      const { data, error } = await supabase.functions.invoke('sous-chat', {
+        body: { prompt: promptDirective, context: ctx }
+      });
+      if (error) throw error;
+      const reply = data?.reply || "I couldn't form a response. Try the full Sous AI tab for a longer answer.";
+      setChat(prev => [...prev, { speaker: 'sous', text: reply }]);
+      speak(reply);
+    } catch (err) {
+      console.error("Quick Sous error:", err);
+      setChat(prev => [...prev, { speaker: 'sous', text: `Error: ${err.message || 'Could not reach Sous.'}` }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSend = (e) => {
+    e.preventDefault();
+    submitQuery(query);
+  };
+
+  // Closed state — just the floating button
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        title="Ask Sous (quick voice question)"
+        aria-label="Ask Sous"
+        style={{
+          position: 'fixed',
+          bottom: 20,
+          right: 20,
+          width: 56,
+          height: 56,
+          borderRadius: '50%',
+          background: C.accent,
+          color: '#fff',
+          border: 'none',
+          cursor: 'pointer',
+          fontSize: 24,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+          zIndex: 9000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'transform 0.15s'
+        }}
+        onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.08)'}
+        onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+      >
+        🎙
+      </button>
+    );
+  }
+
+  // Open state — mini chat panel
+  return (
+    <div style={{
+      position: 'fixed',
+      bottom: 20,
+      right: 20,
+      width: 'min(380px, calc(100vw - 24px))',
+      maxHeight: 'min(560px, calc(100vh - 40px))',
+      background: '#0e0e0c',
+      color: '#f7f1e3',
+      border: `2px solid ${C.accent}`,
+      borderRadius: 8,
+      display: 'flex',
+      flexDirection: 'column',
+      zIndex: 9001,
+      boxShadow: '0 12px 36px rgba(0,0,0,0.5)',
+      overflow: 'hidden'
+    }}>
+      {/* Header */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '10px 14px',
+        background: C.accent,
+        color: '#fff'
+      }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: 0.5 }}>Quick Sous</div>
+          <div style={{ fontSize: 10, opacity: 0.85 }}>Ask anything — voice or text</div>
+        </div>
+        <button
+          onClick={() => { setOpen(false); stopListening(); if (ttsSupported) try { window.speechSynthesis.cancel(); } catch {} }}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: '#fff',
+            cursor: 'pointer',
+            fontSize: 22,
+            lineHeight: 1,
+            padding: 0,
+            width: 28,
+            height: 28
+          }}
+          title="Close"
+          aria-label="Close Quick Sous"
+        >×</button>
+      </div>
+
+      {/* Chat scroll */}
+      <div style={{
+        flex: 1,
+        overflowY: 'auto',
+        padding: 14,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        minHeight: 160
+      }}>
+        {chat.length === 0 && (
+          <div style={{ fontSize: 12, color: '#8a8170', fontStyle: 'italic', textAlign: 'center', padding: '20px 8px' }}>
+            Tap the mic and ask a quick question.<br/>
+            Example: "What's my margin on the lasagne?"
+          </div>
+        )}
+        {chat.map((m, i) => (
+          <div key={i} style={{
+            alignSelf: m.speaker === 'user' ? 'flex-end' : 'flex-start',
+            maxWidth: '85%',
+            background: m.speaker === 'user' ? C.accent : '#1a1a18',
+            color: m.speaker === 'user' ? '#fff' : '#efe6d3',
+            padding: '8px 12px',
+            borderRadius: 6,
+            fontSize: 13,
+            lineHeight: 1.5
+          }}>
+            {m.text}
+          </div>
+        ))}
+        {loading && (
+          <div style={{
+            alignSelf: 'flex-start',
+            background: '#1a1a18',
+            padding: '8px 12px',
+            borderRadius: 6,
+            fontSize: 12,
+            color: '#8a8170',
+            fontStyle: 'italic'
+          }}>
+            Thinking…
+          </div>
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* Input row */}
+      <form onSubmit={handleSend} style={{
+        display: 'flex',
+        gap: 6,
+        padding: 10,
+        borderTop: '1px solid #2a2a26',
+        background: '#121210'
+      }}>
+        {voiceSupported && (
+          <button
+            type="button"
+            onClick={listening ? stopListening : startListening}
+            disabled={loading}
+            title={listening ? 'Stop listening' : 'Tap to speak'}
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 4,
+              border: 'none',
+              background: listening ? '#c14a3a' : '#2a2a26',
+              color: '#fff',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: 18,
+              opacity: loading ? 0.5 : 1,
+              animation: listening ? 'sous-pulse 1.2s infinite' : 'none',
+              flexShrink: 0
+            }}
+          >
+            {listening ? '⏺' : '🎙'}
+          </button>
+        )}
+        <input
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder={listening ? 'Listening…' : (loading ? 'Working…' : 'Type or tap mic')}
+          disabled={loading}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: '#000',
+            color: '#fff',
+            border: listening ? '1px solid #c14a3a' : '1px solid #2a2a26',
+            borderRadius: 4,
+            padding: '0 10px',
+            height: 40,
+            fontSize: 13,
+            fontFamily: 'inherit'
+          }}
+        />
+        <button
+          type="submit"
+          disabled={loading || !query.trim()}
+          style={{
+            height: 40,
+            padding: '0 14px',
+            background: query.trim() && !loading ? C.accent : '#2a2a26',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 4,
+            fontWeight: 700,
+            fontSize: 13,
+            cursor: query.trim() && !loading ? 'pointer' : 'not-allowed',
+            flexShrink: 0
+          }}
+        >
+          Ask
+        </button>
+      </form>
+
+      <style>{`
+        @keyframes sous-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(193, 74, 58, 0.7); }
+          50% { box-shadow: 0 0 0 8px rgba(193, 74, 58, 0); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 function SousScreen({ settings, recipes, components, sales, waste, planner }) {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -5435,6 +6769,26 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
   const [autoSubmit, setAutoSubmit] = useState(true); // submit automatically when speech recognition finishes
   const [continuous, setContinuous] = useState(false); // keep the conversation going: mic reopens after Sous finishes speaking
   const [speaking, setSpeaking] = useState(false);
+
+  // Voice selection — system voices are loaded asynchronously by the browser,
+  // so we listen for `voiceschanged` and rebuild the picker as they arrive.
+  const [availableVoices, setAvailableVoices] = useState([]);
+  const [selectedVoiceName, setSelectedVoiceName] = useState(() => {
+    try { return localStorage.getItem(TTS_VOICE_STORAGE_KEY) || ''; }
+    catch { return ''; }
+  });
+  useEffect(() => {
+    if (!ttsSupported) return;
+    const reloadVoices = () => {
+      const all = window.speechSynthesis.getVoices() || [];
+      // Prefer English voices in the picker — keeps the dropdown short
+      const english = all.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
+      setAvailableVoices(english.length > 0 ? english : all);
+    };
+    reloadVoices();
+    window.speechSynthesis.onvoiceschanged = reloadVoices;
+    return () => { window.speechSynthesis.onvoiceschanged = null; };
+  }, [ttsSupported]);
   const [voiceError, setVoiceError] = useState('');
 
   // Track viewport for mobile-specific layout of the Hands-Free controls
@@ -5495,8 +6849,16 @@ function SousScreen({ settings, recipes, components, sales, waste, planner }) {
       const clean = stripMarkdownForSpeech(text);
       if (!clean) return;
       const utter = new SpeechSynthesisUtterance(clean);
-      utter.lang = 'en-US';
-      utter.rate = 1.25;   // brisk but still clear; default 1.0 is slow for kitchen use
+      // Apply the best available voice (user pick if set, else auto-selected).
+      // Falls back silently to the browser default if nothing matches.
+      const voice = pickBestVoice(selectedVoiceName);
+      if (voice) {
+        utter.voice = voice;
+        utter.lang = voice.lang || 'en-US';
+      } else {
+        utter.lang = 'en-US';
+      }
+      utter.rate = 1.15;   // slightly brisker than natural; less than my old 1.25 reads better with high-quality voices
       utter.pitch = 1.0;
       utter.volume = 1.0;
       utter.onstart = () => setSpeaking(true);
@@ -5751,6 +7113,60 @@ USER QUESTION: ${q}`;
                 />
                 <span>Continuous conversation</span>
               </label>
+            )}
+
+            {ttsSupported && availableVoices.length > 0 && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: isMobile ? 13 : 12,
+                color: C.ink,
+                padding: isMobile ? '10px 4px' : '0',
+                borderTop: isMobile ? `1px solid ${C.paper2}` : 'none',
+                minHeight: isMobile ? 40 : 'auto',
+                flexWrap: 'wrap'
+              }}>
+                <label style={{ fontWeight: 600, flexShrink: 0 }}>Voice:</label>
+                <select
+                  value={selectedVoiceName}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setSelectedVoiceName(v);
+                    try { localStorage.setItem(TTS_VOICE_STORAGE_KEY, v); } catch {}
+                    // Demo the picked voice with a short sample so the user
+                    // can hear it immediately
+                    stopSpeaking();
+                    setTimeout(() => {
+                      const sample = "Chef, this is the voice I will use.";
+                      const utter = new SpeechSynthesisUtterance(sample);
+                      const chosen = pickBestVoice(v);
+                      if (chosen) { utter.voice = chosen; utter.lang = chosen.lang || 'en-US'; }
+                      utter.rate = 1.15;
+                      window.speechSynthesis.speak(utter);
+                    }, 100);
+                  }}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '6px 8px',
+                    border: `1px solid ${C.paper2}`,
+                    borderRadius: 3,
+                    fontSize: 12,
+                    background: '#fff',
+                    fontFamily: 'inherit',
+                    cursor: 'pointer'
+                  }}
+                  title="Pick a voice — preview plays on change"
+                >
+                  <option value="">Auto-detect best (recommended)</option>
+                  {availableVoices.map(v => (
+                    <option key={v.name} value={v.name}>
+                      {v.name} {v.lang ? `(${v.lang})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
 
             {!voiceSupported && (
