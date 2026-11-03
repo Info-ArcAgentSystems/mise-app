@@ -2118,9 +2118,16 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
   }, [activeRecipeRows, localInvoiceLines, editSellPrice]);
 
   // Handle saving the retail adjustments to the core data row targets
-  const handleUpdatePrice = async (e) => {
+    const handleUpdatePrice = async (e) => {
     e.preventDefault();
     if (!supabaseClient || activeRecipeRows.length === 0) return;
+
+    const newPrice = parseFloat(editSellPrice);
+    if (!Number.isFinite(newPrice) || newPrice < 0) {
+      setErrorMessage("Enter a valid sell price before saving.");
+      return;
+    }
+
     setUpdating(true);
     setErrorMessage("");
 
@@ -2129,7 +2136,7 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
       
       const { error } = await supabaseClient
         .from('recipes')
-        .update({ sell_price: parseFloat(editSellPrice) || 0.00 })
+        .update({ sell_price: newPrice })
         .in('id', rowIdsToUpdate);
 
       if (error) throw error;
@@ -5576,7 +5583,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
       setScannedRecipeName(name);
       setScannedCategory(category);
       setScannedYield(yieldSize);
-      if (sell) setScannedSellPrice(String(sell));
+      setScannedSellPrice(sell ? String(sell) : "18.00");
       setScannedText(ingredientLines);
 
       if (!ingredientLines.trim()) {
@@ -5687,6 +5694,13 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
     }
     if (!supabaseClient) {
       setErrorMessage("Supabase connection is not initialised.");
+      return;
+    }
+
+    // Require a real sell price so a recipe can never save at £0 silently
+    const priceCheck = parseFloat(scannedSellPrice);
+    if (!Number.isFinite(priceCheck) || priceCheck <= 0) {
+      setErrorMessage("Set a sell price (per portion) before saving this recipe.");
       return;
     }
 
