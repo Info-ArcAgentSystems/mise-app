@@ -395,65 +395,40 @@ async function syncRecipes(kitchenId, recipes) {
   }
 }
 
+// The Sub-Recipe Library screen writes `components` and `component_ingredients`
+// directly. Like syncRecipes, this background sync must not delete or rewrite
+// those rows from a stale in-memory copy (it used to delete every component not
+// in its list and wipe + re-insert each component's ingredients).
+// It now only inserts brand-new UI-created components (temp ids).
 async function syncComponents(kitchenId, components) {
-  const realIds = components.map((c) => c.id).filter(isUuid);
-  if (realIds.length === 0) {
-    await supabase.from('components').delete().eq('kitchen_id', kitchenId);
-  } else {
-    await supabase
-      .from('components')
-      .delete()
-      .eq('kitchen_id', kitchenId)
-      .not('id', 'in', `(${realIds.join(',')})`);
-  }
   for (const c of components) {
-    let id = c.id;
-    if (!isUuid(id)) {
-      const { data, error } = await supabase
-        .from('components')
-        .insert({
-          kitchen_id: kitchenId,
-          name: c.name,
-          batch_yield: c.batchYield,
-          batch_unit: c.batchUnit,
-          prep_time: c.prepTime,
-          hold_life: c.holdLife,
-          station: c.station,
-        })
-        .select('id')
-        .single();
-      if (error) {
-        console.error(error);
-        continue;
-      }
-      id = data.id;
-      c.id = id;
-    } else {
-      await supabase
-        .from('components')
-        .update({
-          name: c.name,
-          batch_yield: c.batchYield,
-          batch_unit: c.batchUnit,
-          prep_time: c.prepTime,
-          hold_life: c.holdLife,
-          station: c.station,
-        })
-        .eq('id', id);
-    }
-
-    await supabase.from('component_ingredients').delete().eq('component_id', id);
+    if (isUuid(c.id)) continue;
+    const { data, error } = await supabase
+      .from('components')
+      .insert({
+        kitchen_id: kitchenId,
+        name: c.name,
+        batch_yield: c.batchYield,
+        batch_unit: c.batchUnit,
+        prep_time: c.prepTime,
+        hold_life: c.holdLife,
+        station: c.station,
+      })
+      .select('id')
+      .single();
+    if (error) { console.error(error); continue; }
+    c.id = data.id;
     if (c.ingredients?.length) {
       await supabase.from('component_ingredients').insert(
         c.ingredients.map((ing, i) => ({
           kitchen_id: kitchenId,
-          component_id: id,
+          component_id: data.id,
           position: i,
           name: ing.name || '',
           qty: ing.qty || 0,
           unit: ing.unit || 'kg',
           cost: ing.cost || 0,
-          supplier: ing.supplier || 'Veg',
+          supplier: ing.supplier || '',
         }))
       );
     }
