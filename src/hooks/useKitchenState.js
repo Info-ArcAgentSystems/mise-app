@@ -199,7 +199,9 @@ export function useKitchenState(kitchenId) {
       waste: (waste.data || []).map((w) => ({
         id: w.id,
         day: w.day,
+        date: w.day,
         ingredient: w.ingredient,
+        item: w.ingredient, // the Waste Tracker screen reads `item`
         qty: Number(w.qty),
         unit: w.unit,
         cost: Number(w.cost),
@@ -473,21 +475,31 @@ async function syncSales(kitchenId, sales) {
   }
 }
 
+// The Waste Tracker form creates { item, qty, unit, cost (per unit), reason, date }.
+// The table stores the name in `ingredient` and the date in `day`, so map both
+// (previously they were sent as undefined, the insert failed and nothing saved).
 async function syncWaste(kitchenId, waste) {
-  await supabase.from('waste').delete().eq('kitchen_id', kitchenId);
-  if (waste.length) {
-    await supabase.from('waste').insert(
-      waste.map((w) => ({
-        kitchen_id: kitchenId,
-        day: w.day,
-        ingredient: w.ingredient,
-        qty: w.qty,
-        unit: w.unit,
-        cost: w.cost,
-        reason: w.reason,
-      }))
-    );
+  const rows = waste.map((w) => ({
+    kitchen_id: kitchenId,
+    day: w.day || w.date || new Date().toISOString().split('T')[0],
+    ingredient: w.ingredient || w.item || w.itemName || '',
+    qty: Number(w.qty) || 0,
+    unit: w.unit || '',
+    cost: Number(w.cost ?? w.costPerUnit) || 0,
+    reason: w.reason || '',
+  }));
+  // Insert first, then remove the old rows, so a failed insert never wipes the log.
+  const before = await supabase.from('waste').select('id').eq('kitchen_id', kitchenId);
+  if (rows.length) {
+    const { error } = await supabase.from('waste').insert(rows);
+    if (error) {
+      console.error('Waste save failed:', error);
+      if (typeof window !== 'undefined') window.alert('Waste entry could not be saved: ' + (error.message || error));
+      return;
+    }
   }
+  const oldIds = (before.data || []).map((r) => r.id);
+  if (oldIds.length) await supabase.from('waste').delete().in('id', oldIds);
 }
 
 async function syncInvoices(kitchenId, invoices) {

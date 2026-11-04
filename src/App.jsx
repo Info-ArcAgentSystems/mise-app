@@ -202,6 +202,136 @@ function forecastNote(f) {
   return 'Estimated dish mix: ≈1 main per cover, 40% add a starter, 30% a dessert, split evenly within each course. Switches to your sales mix once sales are logged.';
 }
 
+// ============================================================
+// RECIPE COSTING (shared)
+// ============================================================
+// --- MISE COMPLIANT RELATIONAL ENGINE ---
+// Convert a quantity from one unit to another within the same family
+// (mass: g/kg, volume: ml/l, count: ea). Returns null if not convertible.
+const UNIT_FACTORS = {
+  // mass (base: g)
+  g: { family: 'mass', toBase: 1 },
+  kg: { family: 'mass', toBase: 1000 },
+  // volume (base: ml)
+  ml: { family: 'volume', toBase: 1 },
+  l: { family: 'volume', toBase: 1000 },
+  tsp: { family: 'volume', toBase: 5 },
+  tbs: { family: 'volume', toBase: 15 },
+  tbsp: { family: 'volume', toBase: 15 },
+  cup: { family: 'volume', toBase: 240 },
+  pinch: { family: 'volume', toBase: 0.5 }, // approximate culinary pinch
+  // count (base: each)
+  ea: { family: 'count', toBase: 1 },
+  each: { family: 'count', toBase: 1 },
+  pcs: { family: 'count', toBase: 1 },
+  unit: { family: 'count', toBase: 1 },
+};
+
+// Approximate kitchen densities (g/ml) for converting volume measurements
+// to weight when the invoice prices an ingredient by mass. Pulled from
+// standard culinary references; close enough for costing.
+const KITCHEN_DENSITIES = {
+  'cocoa': 0.55, 'cocoa powder': 0.55,
+  'flour': 0.55, 'plain flour': 0.55, 'bread flour': 0.55,
+  'sugar': 0.85, 'caster sugar': 0.85, 'granulated sugar': 0.85,
+  'icing sugar': 0.56, 'brown sugar': 0.93,
+  'baking soda': 0.92, 'bicarbonate of soda': 0.92,
+  'baking powder': 0.95,
+  'salt': 1.20, 'sea salt': 1.20, 'table salt': 1.30,
+  'pepper': 0.50, 'black pepper': 0.50,
+  'butter': 0.91, 'lard': 0.92,
+  'milk': 1.03, 'cream': 0.99, 'double cream': 0.99,
+  'water': 1.00,
+  'oil': 0.92, 'olive oil': 0.92, 'vegetable oil': 0.92, 'sunflower oil': 0.92,
+  'honey': 1.40, 'syrup': 1.32, 'golden syrup': 1.42,
+  'yeast': 0.50,
+  'rice': 0.75, 'oats': 0.40,
+};
+
+const parseQtyUnit = (text) => {
+  const t = (text || "").toLowerCase();
+  // "a pinch of salt" with no number → treat as 1 pinch
+  if (/\bpinch\b/.test(t)) {
+    const m = t.match(/([0-9]+(?:\.[0-9]+)?)/);
+    return { qty: m ? parseFloat(m[1]) : 1, unit: 'pinch' };
+  }
+  const numMatch = t.match(/([0-9]+(?:\.[0-9]+)?)/);
+  const qty = numMatch ? parseFloat(numMatch[1]) : null;
+  const unitMatch = t.match(/\b(kg|g|ml|l|tsp|tbsp|tbs|cup|cups|ea|each|pcs|unit)\b/);
+  let unit = unitMatch ? unitMatch[1] : null;
+  if (unit === 'cups') unit = 'cup';
+  return { qty, unit };
+};
+
+// Look up a density for an ingredient, allowing fuzzy substring matches.
+const lookupDensity = (name) => {
+  const key = (name || '').toLowerCase().trim();
+  if (!key) return null;
+  if (KITCHEN_DENSITIES[key] != null) return KITCHEN_DENSITIES[key];
+  for (const dKey of Object.keys(KITCHEN_DENSITIES)) {
+    if (key.includes(dKey) || dKey.includes(key)) return KITCHEN_DENSITIES[dKey];
+  }
+  return null;
+};
+
+const convertQty = (qty, fromUnit, toUnit, ingredientName) => {
+  const f = UNIT_FACTORS[fromUnit];
+  const t = UNIT_FACTORS[toUnit];
+  if (!f || !t) return null;
+  // Same family — straightforward
+  if (f.family === t.family) return (qty * f.toBase) / t.toBase;
+  // Cross-family (volume <-> mass) requires a density lookup
+  if ((f.family === 'volume' && t.family === 'mass') ||
+      (f.family === 'mass'   && t.family === 'volume')) {
+    const density = lookupDensity(ingredientName); // g/ml
+    if (density == null) return null;
+    if (f.family === 'volume' && t.family === 'mass') {
+      const ml = qty * f.toBase;
+      const grams = ml * density;
+      return grams / t.toBase;
+    } else {
+      const grams = qty * f.toBase;
+      const ml = grams / density;
+      return ml / t.toBase;
+    }
+  }
+  return null; // count <-> mass/volume isn't safe to auto-convert
+};
+
+// Cost one recipe (its flat ingredient rows) against the kitchen's invoice lines.
+// Same matching + unit conversion as the Recipes & Costs screen.
+function costRecipeRows(rows = [], invoiceLines = []) {
+let total = 0;
+(rows || []).forEach((row) => {
+  const ingredientText = (row.ingredient_item || "").toLowerCase().trim();
+  if (!ingredientText) return;
+  const scored = (invoiceLines || []).filter((line) => {
+    const lineName = (line.name || "").toLowerCase().trim();
+    return lineName && (ingredientText.includes(lineName) || lineName.includes(ingredientText));
+  }).map((line) => {
+    const q = parseFloat(line.qty || 1) || 1;
+    const pr = parseFloat(line.price_per_unit || 0) || 0;
+    const t = parseFloat(line.line_total || 0) || 0;
+    return { line, eff: pr > 0 ? pr : (t > 0 && q > 0 ? t / q : 0) };
+  }).sort((x, y) => y.eff - x.eff);
+  const best = scored[0];
+  if (!best || best.eff === 0) return;
+  const invUnit = (best.line.unit || "").toLowerCase().trim();
+  const rq = parseQtyUnit(row.ingredient_item);
+  const invFamily = UNIT_FACTORS[invUnit] ? UNIT_FACTORS[invUnit].family : null;
+  if (rq.qty != null && rq.unit && UNIT_FACTORS[rq.unit] && invFamily) {
+    const converted = convertQty(rq.qty, rq.unit, invUnit, best.line.name || row.ingredient_item);
+    if (converted != null) total += converted * best.eff;
+  } else if (invFamily === 'count') {
+    total += (rq.qty != null ? rq.qty : 1) * best.eff;
+  }
+});
+const yieldText = rows[0]?.yield || "1 Portion";
+const m = String(yieldText).match(/([0-9]+(?:\.[0-9]+)?)/);
+const portions = m && parseFloat(m[1]) > 0 ? parseFloat(m[1]) : 1;
+return { totalCost: total, costPerPortion: total / portions };
+}
+
 // Group flat ingredient-row scanner output into one logical recipe per
 // unique recipe_name, with a structured ingredients array attached.
 function groupRecipesByName(rows) {
@@ -338,6 +468,21 @@ export default function App() {
   // downstream tab that needs full ingredient data (Prep Sheets, Orders &
   // Lists, Financial Matrix) has to read the recipes table itself.
   const [dbRecipes, setDbRecipes] = useState([]);
+  // Invoice lines for kitchen-wide costing (Financials, The Pass, Service Report)
+  const [kitchenInvoiceLines, setKitchenInvoiceLines] = useState([]);
+  useEffect(() => {
+    if (!activeKitchenId) return;
+    let cancelled = false;
+    const loadLines = async () => {
+      try {
+        const { data, error } = await supabase.from('invoice_lines').select('*').eq('kitchen_id', activeKitchenId);
+        if (!cancelled && !error && Array.isArray(data)) setKitchenInvoiceLines(data);
+      } catch (err) { console.error("Invoice lines load failed:", err); }
+    };
+    loadLines();
+    window.addEventListener('mise-db-update', loadLines);
+    return () => { cancelled = true; window.removeEventListener('mise-db-update', loadLines); };
+  }, [activeKitchenId]);
   useEffect(() => {
     if (!activeKitchenId) return;
     let cancelled = false;
@@ -596,6 +741,41 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
 // Portions per dish for the planned covers (dish mix from sales, else estimated).
 const dishForecast = buildDishForecast(groupedRecipes, dbRecipes, sales, planner);
 
+// Sales resolved to their dish (a sale may point at any ingredient row of that dish),
+// with revenue and food cost per line, and waste with qty × cost per unit.
+const rowIdToName = new Map();
+(dbRecipes || []).forEach(r => { if (r?.id) rowIdToName.set(r.id, (r.name || '').trim()); });
+(recipes || []).forEach(r => { if (r?.id && r.name && !rowIdToName.has(r.id)) rowIdToName.set(r.id, r.name.trim()); });
+const costPerPortionByName = {};
+groupedRecipes.forEach(g => {
+  const rows = (dbRecipes || []).filter(r => (r.name || '').trim() === g.name && (r.ingredient_item || '').trim());
+  costPerPortionByName[g.name] = costRecipeRows(rows, kitchenInvoiceLines).costPerPortion;
+});
+const canonicalSales = (sales || []).map(s => {
+  const name = rowIdToName.get(s.recipeId) || s.recipeName || null;
+  const g = name ? groupedRecipes.find(r => r.name === name) : null;
+  const sold = Number(s.sold) || 0;
+  if (!g) return { ...s, recipeName: name, matched: false, revenue: 0, foodCost: 0 };
+  const price = Number(g.sellPrice) || 0;
+  const cpp = costPerPortionByName[g.name] || 0;
+  return { ...s, recipeId: g.id, recipeName: g.name, matched: true, sellPrice: price, costPerPortion: cpp, revenue: sold * price, foodCost: sold * cpp };
+});
+const wasteView = (waste || []).map(w => {
+  const qty = Number(w.qty) || 0;
+  const costPerUnit = Number(w.cost ?? w.costPrice) || 0;
+  return { ...w, item: w.item || w.ingredient || w.itemName || '', qty, costPerUnit, lineTotal: qty * costPerUnit };
+});
+const kitchenTotals = {
+  revenue: canonicalSales.reduce((t, s) => t + s.revenue, 0),
+  foodCost: canonicalSales.reduce((t, s) => t + s.foodCost, 0),
+  wasteCost: wasteView.reduce((t, w) => t + w.lineTotal, 0),
+  matchedSales: canonicalSales.filter(s => s.matched).length,
+  saleCount: canonicalSales.length,
+};
+// Clear field names for Ask Sous so it doesn't mistake cost-per-unit for a total
+const sousSales = canonicalSales.map(s => ({ day: s.day, session: s.session, dish: s.recipeName || 'Unmatched', portionsSold: Number(s.sold) || 0, revenue: Number(s.revenue.toFixed(2)), foodCost: Number(s.foodCost.toFixed(2)) }));
+const sousWaste = wasteView.map(w => ({ item: w.item, qty: w.qty, unit: w.unit, costPerUnit: w.costPerUnit, totalCost: Number(w.lineTotal.toFixed(2)), reason: w.reason, date: w.date || w.day }));
+
   const tabs = ['dashboard', 'servicereport', 'scan', 'archive', 'digitizer', 'recipes', 'components', 'planner', 'prep', 'sales', 'waste', 'intel', 'shopping', 'engineering', 'sous', 'settings'];
 
   // ============================================================
@@ -823,8 +1003,8 @@ const dishForecast = buildDishForecast(groupedRecipes, dbRecipes, sales, planner
       {/* Render Active Functional Screens */}
       {/* Render Active Functional Screens */}
       <div style={S.main}>
-        {tab === 'dashboard' && <Dashboard recipes={recipes} components={dbComponents} planner={planner} sales={sales} waste={waste} settings={settings} setTab={setTab} updateState={update} />}
-        {tab === 'servicereport' && <ServiceReport recipes={recipes || []} components={dbComponents || []} sales={sales || []} waste={waste || []} planner={planner || []} settings={settings || {}} />}
+        {tab === 'dashboard' && <Dashboard recipes={recipes} components={dbComponents} planner={planner} sales={canonicalSales} waste={wasteView} totals={kitchenTotals} settings={settings} setTab={setTab} updateState={update} />}
+        {tab === 'servicereport' && <ServiceReport recipes={groupedRecipes || []} components={dbComponents || []} sales={canonicalSales} waste={wasteView} totals={kitchenTotals} planner={planner || []} settings={settings || {}} />}
         {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={handlePlannerUpdate} />}
         {/* FIX: Wired invoices state array downstream so matching costs align instantly */}
 {tab === 'recipes' && (
@@ -841,10 +1021,10 @@ const dishForecast = buildDishForecast(groupedRecipes, dbRecipes, sales, planner
         {tab === 'components' && <ComponentsScreen kitchenId={activeKitchenId || session?.user?.id || ""} components={dbComponents || []} recipes={groupedRecipes || []} settings={settings || {}} tableReady={componentsTableReady} loadError={componentsLoadError} onRetry={retryComponentsLoad} />}
         {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={dbComponents} forecast={dishForecast} />}
         {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={groupedRecipes} components={dbComponents} forecast={dishForecast} kitchenId={activeKitchenId || session?.user?.id || ""} />}
-        {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
-        {tab === 'waste' && <WasteScreen waste={waste} onUpdate={(val) => update({ waste: val })} settings={settings} />}
-        {tab === 'performance' && <PerformanceScreen recipes={groupedRecipes} components={dbComponents} planner={planner} sales={sales} waste={waste} settings={settings} />}
-        {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={dbComponents} sales={sales} waste={waste} planner={planner} />}
+        {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} dishes={groupedRecipes} onUpdate={(val) => update({ sales: val })} settings={settings} />}
+        {tab === 'waste' && <WasteScreen waste={wasteView} onUpdate={(val) => update({ waste: val })} settings={settings} />}
+        {tab === 'performance' && <PerformanceScreen recipes={groupedRecipes} components={dbComponents} planner={planner} sales={canonicalSales} waste={wasteView} totals={kitchenTotals} settings={settings} />}
+        {tab === 'sous' && <SousScreen settings={settings} recipes={recipes} components={dbComponents} sales={sousSales} waste={sousWaste} planner={planner} />}
         {tab === 'invoices' && <InvoicesScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id || ""} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
         {tab === 'suppliers' && <SuppliersScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id} settings={settings} />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
@@ -867,8 +1047,8 @@ const dishForecast = buildDishForecast(groupedRecipes, dbRecipes, sales, planner
         settings={settings || {}}
         recipes={recipes || []}
         components={dbComponents || []}
-        sales={sales || []}
-        waste={waste || []}
+        sales={sousSales || []}
+        waste={sousWaste || []}
         planner={planner || []}
       />
     </div>
@@ -1509,7 +1689,7 @@ function SettingsScreen({ settings, onUpdate, canEdit = true }) {
 // ============================================================
 // CORE FUNCTIONAL FIX: THE SERVICE REPORT COMPONENT (RESTORED)
 // ============================================================
-function ServiceReport({ recipes = [], components = [], sales = [], waste = [], planner = [], settings = {} }) {
+function ServiceReport({ recipes = [], components = [], sales = [], waste = [], planner = [], settings = {}, totals = null }) {
   const [loading, setLoading] = useState(false);
   const [generatedReport, setGeneratedReport] = useState(null);
   const [errorLog, setErrorLog] = useState("");
@@ -1517,6 +1697,14 @@ function ServiceReport({ recipes = [], components = [], sales = [], waste = [], 
 
   // Compute summary metrics with fallback provisions
   const computedMetrics = useMemo(() => {
+    if (totals) {
+      const grossProfit = totals.revenue - totals.foodCost - totals.wasteCost;
+      return {
+        totalRevenue: totals.revenue, materialCost: totals.foodCost, leakCost: totals.wasteCost, grossProfit,
+        efficiencyPct: totals.revenue > 0 ? (grossProfit / totals.revenue) * 100 : 0,
+        salesCount: sales.length, wasteCount: waste.length
+      };
+    }
     let totalRevenue = 0;
     let materialCost = 0;
     
@@ -1542,7 +1730,7 @@ function ServiceReport({ recipes = [], components = [], sales = [], waste = [], 
       salesCount: Array.isArray(sales) ? sales.length : 0,
       wasteCount: Array.isArray(waste) ? waste.length : 0
     };
-  }, [recipes, sales, waste]);
+  }, [recipes, sales, waste, totals]);
 
   const handleCompileWeeklyAIReport = async () => {
     setLoading(true);
@@ -1551,7 +1739,7 @@ function ServiceReport({ recipes = [], components = [], sales = [], waste = [], 
     const analyticsContext = {
       recipes: (recipes || []).map(r => ({ name: r.name, category: r.category, yield: r.yield })),
       salesSummary: { totalEntries: (sales || []).length, estimatedRevenue: computedMetrics.totalRevenue },
-      wasteLogs: (waste || []).map(w => ({ item: w.ingredientName || w.name, cost: w.cost, reason: w.reason })),
+      wasteLogs: (waste || []).map(w => ({ item: w.item || w.ingredientName || w.name, totalCost: w.lineTotal ?? w.cost, reason: w.reason })),
       plannerCovers: planner || []
     };
 
@@ -1700,12 +1888,14 @@ function Dashboard(props) {
   
   const setTab = props.setTab;
   const isMobile = props.viewport === 'mobile';
+  const totals = props.totals || null;
 
   // Extract global dynamic currency config setup safely
   const currencySymbol = settings?.currency || '£';
 
   // 1. Weekly Sales Calculation (Checks both total and netSales)
   const totalWeeklySales = useMemo(() => {
+    if (totals) return totals.revenue;
     if (!sales || sales.length === 0) return 0;
     return sales.reduce((sum, item) => {
       const salesValue = parseFloat(item.total || item.netSales || 0);
@@ -1715,6 +1905,7 @@ function Dashboard(props) {
 
   // 2. Tracked Waste Calculation (Checks both cost and costPrice)
   const totalWeeklyWaste = useMemo(() => {
+    if (totals) return totals.wasteCost;
     if (!waste || waste.length === 0) return 0;
     return waste.reduce((sum, item) => {
       const wasteValue = parseFloat(item.cost || item.costPrice || 0);
@@ -1759,6 +1950,7 @@ function Dashboard(props) {
 
   // 3. Theoretical Food Cost Percentage Matrix
   const aggregateFoodCostPercent = useMemo(() => {
+    if (totals) return totals.revenue > 0 ? (totals.foodCost / totals.revenue) * 100 : 0;
     let theoreticalCostTotal = 0;
     let retailRevenueTotal = 0;
 
@@ -1776,7 +1968,7 @@ function Dashboard(props) {
 
     if (retailRevenueTotal === 0) return 0; // No revenue logged yet — no theoretical cost to show
     return (theoreticalCostTotal / retailRevenueTotal) * 100;
-  }, [sales, recipes, components]);
+  }, [sales, recipes, components, totals]);
 
   return (
     <div style={{ padding: '4px 0' }}>
@@ -1799,7 +1991,7 @@ function Dashboard(props) {
             {isMobile ? 'Sales' : 'Weekly Net Sales'}
           </div>
           <div style={{ fontSize: isMobile ? 15 : 26, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: '#0e0e0c' }}>
-            {currencySymbol}{Math.round(totalWeeklySales).toLocaleString()}
+            {currencySymbol}{totalWeeklySales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
 
@@ -1819,7 +2011,7 @@ function Dashboard(props) {
             {isMobile ? 'Waste' : 'Tracked Waste'}
           </div>
           <div style={{ fontSize: isMobile ? 15 : 26, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: totalWeeklyWaste > 150 ? '#b8362a' : '#0e0e0c' }}>
-            {currencySymbol}{Math.round(totalWeeklyWaste).toLocaleString()}
+            {currencySymbol}{totalWeeklyWaste.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
       </div>
@@ -2062,98 +2254,8 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
     }
   }, [activeRecipeRows, selectedRecipeName, groupSellPrice]);
 
-  // --- MISE COMPLIANT RELATIONAL ENGINE ---
-  // Convert a quantity from one unit to another within the same family
-  // (mass: g/kg, volume: ml/l, count: ea). Returns null if not convertible.
-  const UNIT_FACTORS = {
-    // mass (base: g)
-    g: { family: 'mass', toBase: 1 },
-    kg: { family: 'mass', toBase: 1000 },
-    // volume (base: ml)
-    ml: { family: 'volume', toBase: 1 },
-    l: { family: 'volume', toBase: 1000 },
-    tsp: { family: 'volume', toBase: 5 },
-    tbs: { family: 'volume', toBase: 15 },
-    tbsp: { family: 'volume', toBase: 15 },
-    cup: { family: 'volume', toBase: 240 },
-    pinch: { family: 'volume', toBase: 0.5 }, // approximate culinary pinch
-    // count (base: each)
-    ea: { family: 'count', toBase: 1 },
-    each: { family: 'count', toBase: 1 },
-    pcs: { family: 'count', toBase: 1 },
-    unit: { family: 'count', toBase: 1 },
-  };
-
-  // Approximate kitchen densities (g/ml) for converting volume measurements
-  // to weight when the invoice prices an ingredient by mass. Pulled from
-  // standard culinary references; close enough for costing.
-  const KITCHEN_DENSITIES = {
-    'cocoa': 0.55, 'cocoa powder': 0.55,
-    'flour': 0.55, 'plain flour': 0.55, 'bread flour': 0.55,
-    'sugar': 0.85, 'caster sugar': 0.85, 'granulated sugar': 0.85,
-    'icing sugar': 0.56, 'brown sugar': 0.93,
-    'baking soda': 0.92, 'bicarbonate of soda': 0.92,
-    'baking powder': 0.95,
-    'salt': 1.20, 'sea salt': 1.20, 'table salt': 1.30,
-    'pepper': 0.50, 'black pepper': 0.50,
-    'butter': 0.91, 'lard': 0.92,
-    'milk': 1.03, 'cream': 0.99, 'double cream': 0.99,
-    'water': 1.00,
-    'oil': 0.92, 'olive oil': 0.92, 'vegetable oil': 0.92, 'sunflower oil': 0.92,
-    'honey': 1.40, 'syrup': 1.32, 'golden syrup': 1.42,
-    'yeast': 0.50,
-    'rice': 0.75, 'oats': 0.40,
-  };
-
-  const parseQtyUnit = (text) => {
-    const t = (text || "").toLowerCase();
-    // "a pinch of salt" with no number → treat as 1 pinch
-    if (/\bpinch\b/.test(t)) {
-      const m = t.match(/([0-9]+(?:\.[0-9]+)?)/);
-      return { qty: m ? parseFloat(m[1]) : 1, unit: 'pinch' };
-    }
-    const numMatch = t.match(/([0-9]+(?:\.[0-9]+)?)/);
-    const qty = numMatch ? parseFloat(numMatch[1]) : null;
-    const unitMatch = t.match(/\b(kg|g|ml|l|tsp|tbsp|tbs|cup|cups|ea|each|pcs|unit)\b/);
-    let unit = unitMatch ? unitMatch[1] : null;
-    if (unit === 'cups') unit = 'cup';
-    return { qty, unit };
-  };
-
-  // Look up a density for an ingredient, allowing fuzzy substring matches.
-  const lookupDensity = (name) => {
-    const key = (name || '').toLowerCase().trim();
-    if (!key) return null;
-    if (KITCHEN_DENSITIES[key] != null) return KITCHEN_DENSITIES[key];
-    for (const dKey of Object.keys(KITCHEN_DENSITIES)) {
-      if (key.includes(dKey) || dKey.includes(key)) return KITCHEN_DENSITIES[dKey];
-    }
-    return null;
-  };
-
-  const convertQty = (qty, fromUnit, toUnit, ingredientName) => {
-    const f = UNIT_FACTORS[fromUnit];
-    const t = UNIT_FACTORS[toUnit];
-    if (!f || !t) return null;
-    // Same family — straightforward
-    if (f.family === t.family) return (qty * f.toBase) / t.toBase;
-    // Cross-family (volume <-> mass) requires a density lookup
-    if ((f.family === 'volume' && t.family === 'mass') ||
-        (f.family === 'mass'   && t.family === 'volume')) {
-      const density = lookupDensity(ingredientName); // g/ml
-      if (density == null) return null;
-      if (f.family === 'volume' && t.family === 'mass') {
-        const ml = qty * f.toBase;
-        const grams = ml * density;
-        return grams / t.toBase;
-      } else {
-        const grams = qty * f.toBase;
-        const ml = grams / density;
-        return ml / t.toBase;
-      }
-    }
-    return null; // count <-> mass/volume isn't safe to auto-convert
-  };
+  // Costing helpers (UNIT_FACTORS, convertQty, …) live at module scope so
+  // Financials, The Pass and Service Report cost recipes the same way.
 
   const evaluatedCostingData = useMemo(() => {
     let combinedRecipeCost = 0;
@@ -3985,7 +4087,51 @@ function ShoppingScreen({ planner = [], recipes = [], components = [], forecast 
   );
 }
 
-function SalesScreen({ recipes = [], sales = [], onUpdate, settings }) {
+// Manual sales entry (the SOP's daily entry). Adds to an existing day/session/dish line if present.
+function AddSaleForm({ recipes = [], dishes = [], sales = [], onUpdate }) {
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const [day, setDay] = useState('Mon');
+  const [session, setSession] = useState('Lunch');
+  const [dish, setDish] = useState('');
+  const [sold, setSold] = useState('');
+  const [msg, setMsg] = useState('');
+  const names = (dishes.length ? dishes.map(d => d.name) : Array.from(new Set(recipes.map(r => r.name).filter(Boolean)))).sort();
+  const submit = (e) => {
+    e.preventDefault();
+    const qty = parseInt(sold, 10);
+    if (!dish || !Number.isFinite(qty) || qty <= 0) { setMsg('Pick a dish and enter portions sold (above 0).'); return; }
+    const row = recipes.find(r => (r.name || '').trim() === dish) || dishes.find(d => d.name === dish);
+    if (!row) { setMsg("Couldn't find that dish."); return; }
+    const sameDish = (s) => {
+      const r = recipes.find(x => x.id === s.recipeId);
+      return (r ? (r.name || '').trim() : null) === dish;
+    };
+    const next = [...sales];
+    const idx = next.findIndex(s => s.day === day && s.session === session && sameDish(s));
+    if (idx !== -1) next[idx] = { ...next[idx], sold: (Number(next[idx].sold) || 0) + qty };
+    else next.push({ day, session, recipeId: row.id, sold: qty });
+    onUpdate(next);
+    setSold('');
+    setMsg(`Added ${qty} × ${dish} (${day} ${session}).`);
+  };
+  const field = { padding: '8px 10px', border: `1px solid ${C.inkRule}`, borderRadius: 4, background: '#fff', fontSize: 13, boxSizing: 'border-box' };
+  return (
+    <form onSubmit={submit} style={{ ...S.card, marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+      <div style={{ width: '100%', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', color: C.inkFade }}>Add sales</div>
+      <select value={day} onChange={e => setDay(e.target.value)} style={field}>{days.map(d => <option key={d}>{d}</option>)}</select>
+      <select value={session} onChange={e => setSession(e.target.value)} style={field}><option>Lunch</option><option>Dinner</option></select>
+      <select value={dish} onChange={e => setDish(e.target.value)} style={{ ...field, flex: '1 1 200px' }}>
+        <option value="">Select dish…</option>
+        {names.map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+      <input type="number" min="1" step="1" placeholder="Portions" value={sold} onChange={e => setSold(e.target.value)} style={{ ...field, width: 110 }} />
+      <button type="submit" style={S.btnAccent}>Add</button>
+      {msg && <div style={{ width: '100%', fontSize: 12, color: C.inkSoft }}>{msg}</div>}
+    </form>
+  );
+}
+
+function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = [] }) {
   const currencySymbol = settings?.currency || '£';
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
   useEffect(() => {
@@ -3998,6 +4144,7 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings }) {
     return (
       <div style={S.container}>
         <ScreenHeader title="Sales Ledger Registers" sub="Correlate point of sale deployment figures with physical matrix recipes" />
+        <AddSaleForm recipes={recipes} dishes={dishes} sales={sales} onUpdate={onUpdate} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {sales.length === 0 && (
             <div style={{ background: C.highlight, borderRadius: 4, padding: 20, textAlign: 'center', border: `1px dashed ${C.inkFade}` }}>
@@ -4038,11 +4185,11 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings }) {
   }
 
   return (
-    <SalesLedgerView sales={sales} recipes={recipes} onUpdate={onUpdate} />
+    <SalesLedgerView sales={sales} recipes={recipes} dishes={dishes} onUpdate={onUpdate} />
   );
 }
 
-function SalesLedgerView({ sales, recipes, onUpdate }) {
+function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -4055,6 +4202,7 @@ function SalesLedgerView({ sales, recipes, onUpdate }) {
     return (
       <div style={S.container}>
         <ScreenHeader title="Sales Ledger Registers" sub="Correlate point of sale deployment figures with physical matrix recipes" />
+        <AddSaleForm recipes={recipes} dishes={dishes} sales={sales} onUpdate={onUpdate} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {sales.length === 0 ? (
             <div style={{ ...S.card, color: C.inkFade, fontSize: 13 }}>No sales recorded yet.</div>
@@ -4095,6 +4243,7 @@ function SalesLedgerView({ sales, recipes, onUpdate }) {
   return (
     <div style={S.container}>
       <ScreenHeader title="Sales Ledger Registers" sub="Correlate point of sale deployment figures with physical matrix recipes" />
+      <AddSaleForm recipes={recipes} dishes={dishes} sales={sales} onUpdate={onUpdate} />
       {sales.length === 0 ? (
         <div style={{ padding: 30, background: C.highlight, borderRadius: 4, textAlign: 'center', border: `1px dashed ${C.inkFade}` }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>📊</div>
@@ -4351,10 +4500,18 @@ function WasteScreen({ waste = [], onUpdate, settings = {} }) {
   );
 }
 
-function PerformanceScreen({ recipes = [], components = [], planner = [], sales = [], waste = [], settings }) {
+function PerformanceScreen({ recipes = [], components = [], planner = [], sales = [], waste = [], settings, totals = null }) {
   const currencySymbol = settings?.currency || '£'; // Fallback safely to defaults
 
   const report = useMemo(() => {
+    if (totals) {
+      const profitMargin = totals.revenue - totals.foodCost - totals.wasteCost;
+      return {
+        rawRevenue: totals.revenue, computedCost: totals.foodCost, leakCost: totals.wasteCost, profitMargin,
+        finalEfficiencyPct: totals.revenue > 0 ? (profitMargin / totals.revenue) * 100 : 0,
+        saleCount: totals.saleCount, matchedSales: totals.matchedSales, recipeCount: recipes.length, wasteCount: waste.length
+      };
+    }
     let rawRevenue = 0;
     let computedCost = 0;
     let matchedSales = 0;
@@ -4380,7 +4537,7 @@ function PerformanceScreen({ recipes = [], components = [], planner = [], sales 
       // Diagnostic counts for the empty-state hint
       saleCount: sales.length, matchedSales, recipeCount: recipes.length, wasteCount: waste.length
     };
-  }, [recipes, components, sales, waste]);
+  }, [recipes, components, sales, waste, totals]);
 
   return (
     <div style={S.container}>
@@ -7546,3 +7703,5 @@ USER QUESTION: ${q}`;
     </div>
   );
 }
+
+
