@@ -749,7 +749,7 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
         {tab === 'invoices' && <InvoicesScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id || ""} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
         {tab === 'suppliers' && <SuppliersScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id} settings={settings} />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
-        {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} />}
+        {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} canEdit={!activeKitchenId || activeKitchenId === session?.user?.id} />}
         {tab === 'team' && <TeamScreen supabase={supabase} session={session} activeKitchenId={activeKitchenId} />}
         {/* THIS ENSURES IT CALLS RECIPEDIGITIZER WITH THE CORRECT SESSION CONTEXT */}
         {tab === 'scan' && (
@@ -996,7 +996,9 @@ function TeamScreen({ supabase, session, activeKitchenId }) {
   );
 }
 
-function SettingsScreen({ settings, onUpdate }) {
+// canEdit = this user owns the active kitchen. Joined members inherit the
+// owner's settings (currency, units, timezone) and see them read-only.
+function SettingsScreen({ settings, onUpdate, canEdit = true }) {
   // ─── Locale-driven currency auto-detection ───────────────────
   // When the user picks "Auto" in the region selector we resolve their
   // currency from the browser locale. Falls back to GBP if anything
@@ -1299,6 +1301,7 @@ function SettingsScreen({ settings, onUpdate }) {
 
   // Dispatch fully confirmed options configuration to the remote database
   const handleSave = async () => {
+    if (!canEdit) return;
     setIsSaving(true);
     try {
       await onUpdate(localSettings);
@@ -1316,7 +1319,13 @@ function SettingsScreen({ settings, onUpdate }) {
       <h2 style={{ fontFamily: "'Bitter', serif", fontSize: 24, marginBottom: 4 }}>Station Settings</h2>
       <p style={{ color: '#5a4f40', fontSize: 13, marginBottom: 24 }}>Manage localized currency displays, kitchen hierarchy metrics, and system defaults.</p>
       
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, background: '#efe6d3', padding: 24, borderRadius: 6, border: '1px solid #1a1a18' }}>
+      {!canEdit && (
+        <div style={{ background: '#1c2428', color: '#fff', border: '1px solid #2c5a82', padding: '10px 14px', borderRadius: 4, marginBottom: 16, fontSize: 13 }}>
+          🔒 You've joined this kitchen. Currency, units and timezone are set by the kitchen owner and shown here read-only.
+        </div>
+      )}
+      <fieldset disabled={!canEdit} style={{ border: 'none', padding: 0, margin: 0, minWidth: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, background: '#efe6d3', padding: 24, borderRadius: 6, border: '1px solid #1a1a18', opacity: canEdit ? 1 : 0.75 }}>
         
         <div>
           <label style={{ display: 'block', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6, letterSpacing: '0.5px' }}>Kitchen Hierarchy Role</label>
@@ -1375,6 +1384,7 @@ function SettingsScreen({ settings, onUpdate }) {
           </select>
         </div>
 
+        {canEdit && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, paddingTop: 16, borderTop: '1px solid #5a4f40' }}>
           <button 
             onClick={handleSave} 
@@ -1389,8 +1399,10 @@ function SettingsScreen({ settings, onUpdate }) {
             </span>
           )}
         </div>
+        )}
 
       </div>
+      </fieldset>
     </div>
   );
 }
