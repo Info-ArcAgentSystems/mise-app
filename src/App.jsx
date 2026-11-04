@@ -183,7 +183,6 @@ export default function App() {
   }, []);
 
   // Pass user profile details downstream to initialize state
-  const [state, update, loaded] = useKitchenState(session?.user?.id);
 
   // Resolve the user's active kitchen from the kitchen_members table.
   // Falls back to user.id for users who haven't been migrated yet
@@ -215,6 +214,10 @@ export default function App() {
     window.addEventListener('mise-kitchen-change', onDbUpdate);
     return () => { cancelled = true; window.removeEventListener('mise-kitchen-change', onDbUpdate); };
   }, [session?.user?.id]);
+
+  // Shared kitchen state (settings incl. currency, planner, sales, waste...) is
+  // loaded by KITCHEN, so a member who joins sees the owner's currency/units.
+  const [state, update, loaded] = useKitchenState(activeKitchenId);
 
   // Live calculation of kitchen forecast confidence based on database metrics
   const forecastMetrics = React.useMemo(() => {

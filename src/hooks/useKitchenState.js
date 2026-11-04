@@ -134,7 +134,8 @@ export function useKitchenState(kitchenId) {
         id: r.id,
         name: r.name,
         category: r.category,
-        sellPrice: Number(r.sell_price),
+        // NULL = "Not set". Number(null) would turn it into 0, so keep it null.
+        sellPrice: r.sell_price === null || r.sell_price === undefined ? null : Number(r.sell_price),
         dietary: r.dietary || [],
         ingredients: (recipeIngredientsByRecipe[r.id] || [])
           .sort((a, b) => a.position - b.position)
@@ -325,17 +326,13 @@ async function syncPlanner(kitchenId, planner) {
   );
 }
 
+// The Recipe Digitizer and Recipes & Costs screens write the `recipes` table
+// directly (one row per ingredient, sell_price set there). This background
+// sync must NOT overwrite those rows: it used to bulk-delete rows missing from
+// its in-memory copy and re-write sell_price from stale state, which reset
+// freshly saved prices back to 0. It now only inserts brand-new UI-created
+// recipes (temp ids) and keeps their recipe_ingredients in step.
 async function syncRecipes(kitchenId, recipes) {
-  const realIds = recipes.map((r) => r.id).filter(isUuid);
-  if (realIds.length === 0) {
-    await supabase.from('recipes').delete().eq('kitchen_id', kitchenId);
-  } else {
-    await supabase
-      .from('recipes')
-      .delete()
-      .eq('kitchen_id', kitchenId)
-      .not('id', 'in', `(${realIds.join(',')})`);
-  }
   for (const r of recipes) {
     let id = r.id;
     if (!isUuid(id)) {
@@ -345,7 +342,10 @@ async function syncRecipes(kitchenId, recipes) {
           kitchen_id: kitchenId,
           name: r.name,
           category: r.category,
-          sell_price: r.sellPrice,
+          sell_price:
+            Number.isFinite(Number(r.sellPrice)) && Number(r.sellPrice) > 0
+              ? Number(r.sellPrice)
+              : null,
           dietary: r.dietary || [],
         })
         .select('id')
@@ -356,18 +356,12 @@ async function syncRecipes(kitchenId, recipes) {
       }
       id = data.id;
       r.id = id; // mutate so the in-memory state holds the real UUID
-    } else {
-      await supabase
-        .from('recipes')
-        .update({
-          name: r.name,
-          category: r.category,
-          sell_price: r.sellPrice,
-          dietary: r.dietary || [],
-        })
-        .eq('id', id);
     }
+    // Existing rows are left alone here (no name / category / sell_price writes).
 
+    // Only touch structured ingredients when this object actually carries them
+    // (the Digitizer's flat rows don't, and shouldn't wipe anything).
+    if (!Array.isArray(r.ingredients)) continue;
     await supabase.from('recipe_ingredients').delete().eq('recipe_id', id);
     if (r.ingredients?.length) {
       await supabase.from('recipe_ingredients').insert(
