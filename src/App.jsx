@@ -105,6 +105,103 @@ function formatEditedBy(email, isoDate) {
   return `Last edited by ${who}${when}`;
 }
 
+// ============================================================
+// FORECAST + UNIT HELPERS (Prep Sheets, Orders & Lists)
+// ============================================================
+// Units are converted to a base per family before anything is added up,
+// so "1 L" + "500 g" is never summed as one number.
+const UNIT_TABLE = {
+  mg: ['mass', 0.001], g: ['mass', 1], gr: ['mass', 1], gram: ['mass', 1], grams: ['mass', 1],
+  kg: ['mass', 1000], kgs: ['mass', 1000], kilo: ['mass', 1000], kilos: ['mass', 1000],
+  oz: ['mass', 28.35], lb: ['mass', 453.6], lbs: ['mass', 453.6],
+  ml: ['vol', 1], cl: ['vol', 10], dl: ['vol', 100], l: ['vol', 1000], ltr: ['vol', 1000],
+  litre: ['vol', 1000], litres: ['vol', 1000], liter: ['vol', 1000], liters: ['vol', 1000],
+  tsp: ['vol', 5], teaspoon: ['vol', 5], teaspoons: ['vol', 5],
+  tbsp: ['vol', 15], tbs: ['vol', 15], tbl: ['vol', 15], tablespoon: ['vol', 15], tablespoons: ['vol', 15],
+  cup: ['vol', 240], cups: ['vol', 240], 'fl oz': ['vol', 29.57], floz: ['vol', 29.57],
+  ea: ['count', 1], each: ['count', 1], pc: ['count', 1], pcs: ['count', 1], piece: ['count', 1], pieces: ['count', 1], x: ['count', 1], '': ['count', 1],
+};
+
+// -> { family, base, label }  family: 'mass' | 'vol' | 'count' | 'count:<word>' | 'none'
+function normalizeQty(amount, unit) {
+  const u = String(unit || '').trim().toLowerCase().replace(/\.$/, '');
+  const amt = Number(amount) || 0;
+  if (amt <= 0) return { family: 'none', base: 0, label: String(unit || '').trim() || 'as needed' };
+  const hit = UNIT_TABLE[u];
+  if (hit) return { family: hit[0], base: amt * hit[1], label: hit[0] === 'count' ? 'ea' : null };
+  // Non-standard count words: "loaves", "pizzas", "cloves"…
+  return { family: `count:${u}`, base: amt, label: u };
+}
+
+const trimNum = (n, dp) => {
+  const s = Number(n).toFixed(dp);
+  return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
+};
+function formatQty(base, family, label) {
+  if (family === 'none') return label || 'as needed';
+  if (family === 'mass') return base >= 1000 ? `${trimNum(base / 1000, 2)} kg` : `${trimNum(base, 0)} g`;
+  if (family === 'vol') return base >= 1000 ? `${trimNum(base / 1000, 2)} L` : `${trimNum(base, 0)} ml`;
+  return `${trimNum(base, 1)} ${label || 'ea'}`;
+}
+
+const normName = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+const singular = (s) => s.replace(/(ies)$/, 'y').replace(/(oes)$/, 'o').replace(/s$/, '');
+
+// Course from the recipe category. Used for the estimated dish mix and prep stage.
+function courseOf(category) {
+  const c = String(category || '').toLowerCase();
+  if (/dessert|pudding|sweet|bakery|cake|pastr|biscuit|cookie/.test(c)) return 'dessert';
+  if (/starter|appet|antipast|small plate|side|snack|soup/.test(c)) return 'starter';
+  if (/drink|beverage|coffee|juice/.test(c)) return 'drink';
+  return 'main';
+}
+// Estimated share of covers that order something from each course.
+const COURSE_ATTACH = { main: 1.0, starter: 0.4, dessert: 0.3, drink: 0.5 };
+const MIN_SALES_FOR_MIX = 10; // portions sold in a course before we trust its sales mix
+
+// Forecast portions per dish for the planned covers.
+// 1. Covers are split by course: every cover ≈ 1 main, 40% add a starter, 30% a dessert.
+// 2. Within a course, dishes share those portions by their SALES MIX (portions sold so far),
+//    smoothed so a new dish still gets a small share. With no sales yet they split evenly.
+function buildDishForecast(recipes = [], recipeRows = [], sales = [], planner = []) {
+  const covers = (planner || []).reduce((s, d) => s + (parseInt(d.lunch) || 0) + (parseInt(d.dinner) || 0), 0);
+  const idToName = new Map();
+  (recipeRows || []).forEach(r => { if (r?.id) idToName.set(r.id, (r.recipe_name || r.name || '').trim()); });
+  (recipes || []).forEach(r => { if (r?.id) idToName.set(r.id, r.name); });
+
+  const sold = {};
+  (sales || []).forEach(s => {
+    const name = idToName.get(s.recipeId) || (s.recipeName || s.name || '').trim();
+    const qty = Number(s.sold) || 0;
+    if (name && qty > 0) sold[name] = (sold[name] || 0) + qty;
+  });
+
+  const byCourse = {};
+  (recipes || []).forEach(r => { (byCourse[courseOf(r.category)] ||= []).push(r); });
+
+  const byName = {};
+  const sources = new Set();
+  Object.entries(byCourse).forEach(([course, list]) => {
+    const coursePortions = covers * (COURSE_ATTACH[course] ?? 1);
+    const soldTotal = list.reduce((s, r) => s + (sold[r.name] || 0), 0);
+    const useSales = soldTotal >= MIN_SALES_FOR_MIX;
+    sources.add(useSales ? 'sales' : 'estimate');
+    list.forEach(r => {
+      const share = useSales ? ((sold[r.name] || 0) + 1) / (soldTotal + list.length) : 1 / list.length;
+      byName[r.name] = { portions: coursePortions * share, share, course, source: useSales ? 'sales' : 'estimate', sold: sold[r.name] || 0 };
+    });
+  });
+  const mode = sources.size === 0 ? 'none' : sources.size > 1 ? 'mixed' : [...sources][0];
+  return { covers, byName, mode };
+}
+
+function forecastNote(f) {
+  if (!f || f.mode === 'none') return '';
+  if (f.mode === 'sales') return 'Dish mix from your logged sales (each dish’s share of portions sold).';
+  if (f.mode === 'mixed') return 'Dish mix from logged sales where there are enough; estimated for the rest (≈1 main per cover, 40% starters, 30% desserts).';
+  return 'Estimated dish mix: ≈1 main per cover, 40% add a starter, 30% a dessert, split evenly within each course. Switches to your sales mix once sales are logged.';
+}
+
 // Group flat ingredient-row scanner output into one logical recipe per
 // unique recipe_name, with a structured ingredients array attached.
 function groupRecipesByName(rows) {
@@ -496,6 +593,8 @@ const planner = plannerTableReady && dbPlanner ? dbPlanner : (Array.isArray(loca
 // Prefer DB rows (full ingredient_item shape) over the localStorage
 // prop (which arrives in a reduced shape that drops ingredient_item).
 const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : recipes);
+// Portions per dish for the planned covers (dish mix from sales, else estimated).
+const dishForecast = buildDishForecast(groupedRecipes, dbRecipes, sales, planner);
 
   const tabs = ['dashboard', 'servicereport', 'scan', 'archive', 'digitizer', 'recipes', 'components', 'planner', 'prep', 'sales', 'waste', 'intel', 'shopping', 'engineering', 'sous', 'settings'];
 
@@ -740,8 +839,8 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
   />
 )}
         {tab === 'components' && <ComponentsScreen kitchenId={activeKitchenId || session?.user?.id || ""} components={dbComponents || []} recipes={groupedRecipes || []} settings={settings || {}} tableReady={componentsTableReady} loadError={componentsLoadError} onRetry={retryComponentsLoad} />}
-        {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={dbComponents} />}
-        {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={groupedRecipes} components={dbComponents} />}
+        {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={dbComponents} forecast={dishForecast} />}
+        {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={groupedRecipes} components={dbComponents} forecast={dishForecast} kitchenId={activeKitchenId || session?.user?.id || ""} />}
         {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
         {tab === 'waste' && <WasteScreen waste={waste} onUpdate={(val) => update({ waste: val })} settings={settings} />}
         {tab === 'performance' && <PerformanceScreen recipes={groupedRecipes} components={dbComponents} planner={planner} sales={sales} waste={waste} settings={settings} />}
@@ -3342,7 +3441,7 @@ function ScanSubRecipeModal({ settings, onClose, onScanComplete }) {
   );
 }
 
-function PrepScreen({ planner = [], recipes = [], components = [] }) {
+function PrepScreen({ planner = [], recipes = [], components = [], forecast = null }) {
   const [completedKeys, setCompletedKeys] = React.useState(new Set());
   const [syncing, setSyncing] = React.useState(false);
 
@@ -3378,45 +3477,45 @@ function PrepScreen({ planner = [], recipes = [], components = [] }) {
     return planner.reduce((sum, day) => sum + (parseInt(day.lunch) || 0) + (parseInt(day.dinner) || 0), 0);
   }, [planner]);
 
-  // 3. Extrapolate tasks and group by category phase
+  // 3. One task per recipe, scaled to the dish's forecast portions (not all covers).
+  //    Stage rules (simple and visible):
+  //      Advance     – needs time ahead: yeast dough, cure, brine, pickle, marinade, ferment, soak
+  //      Day before  – desserts and anything that has to set (gelatine) or braise
+  //      Same day    – starters, salads, soups
+  //      Pre-service – mains and everything else
   const phasedTasks = useMemo(() => {
     const phases = { advance: [], dayBefore: [], sameDay: [], service: [] };
     if (totalWeeklyCovers === 0 || recipes.length === 0) return phases;
+    const f = forecast || buildDishForecast(recipes, [], [], planner);
 
     recipes.forEach(recipe => {
       const yieldAmt = parseFloat(recipe.yieldAmount) || 1;
-      const scaleFactor = totalWeeklyCovers / yieldAmt;
+      const portions = f.byName[recipe.name]?.portions || 0;
+      if (portions <= 0) return;
+      const scaleFactor = portions / yieldAmt;
+      const ingNames = (recipe.ingredients || []).map(i => normName(i.name)).join(' | ');
 
-      (recipe.ingredients || []).forEach(ing => {
-        const totalQtyNeeded = ((parseFloat(ing.amount || ing.qty) || 0) * scaleFactor).toFixed(1);
-        const unit = ing.unit || 'g';
-        const name = ing.name ? ing.name.toLowerCase() : '';
-        const uniqueKey = `recipe-${recipe.id}-${name}`;
+      const lines = (recipe.ingredients || []).map(ing => {
+        const q = normalizeQty(ing.amount ?? ing.qty, ing.unit);
+        const shown = q.family === 'none' ? `${q.label} (as needed)` : formatQty(q.base * scaleFactor, q.family, q.label);
+        return `${ing.name}: ${shown}`;
+      });
 
-        const taskItem = {
-          id: uniqueKey,
-          task: recipe.name,
-          detail: `${ing.name}: ${totalQtyNeeded} ${unit} needed`
-        };
+      const course = courseOf(recipe.category);
+      let phase = 'service';
+      if (/yeast|cure|brine|pickl|marinad|marinat|ferment|soak/.test(ingNames)) phase = 'advance';
+      else if (course === 'dessert' || /gelatin|braise|braising/.test(ingNames)) phase = 'dayBefore';
+      else if (course === 'starter' || /salad|soup/.test(normName(recipe.name))) phase = 'sameDay';
 
-        if (name.includes('sauce') || name.includes('marinade') || name.includes('braise')) {
-          taskItem.task = `Simmer base for ${recipe.name}`;
-          phases.dayBefore.push(taskItem);
-        } else if (name.includes('pickled') || name.includes('cure') || name.includes('stock')) {
-          taskItem.task = `Brine/Cure setup for ${recipe.name}`;
-          phases.advance.push(taskItem);
-        } else if (name.includes('fresh') || name.includes('garnish') || name.includes('salad') || name.includes('chopped')) {
-          taskItem.task = `Mise processing for ${recipe.name}`;
-          phases.sameDay.push(taskItem);
-        } else {
-          taskItem.task = `Line stock: ${recipe.name}`;
-          phases.service.push(taskItem);
-        }
+      phases[phase].push({
+        id: `prep-${normName(recipe.name)}`,
+        task: `${recipe.name} — ${trimNum(portions, 0)} portions`,
+        detail: [`${trimNum(scaleFactor, 1)} × batch of ${recipe.yield || yieldAmt}`, ...lines]
       });
     });
 
     return phases;
-  }, [recipes, totalWeeklyCovers]);
+  }, [recipes, totalWeeklyCovers, forecast, planner]);
 
   // 4. Handle checkoff updates in Supabase
   const toggleTaskCompleted = async (taskKey) => {
@@ -3506,7 +3605,13 @@ function PrepScreen({ planner = [], recipes = [], components = [] }) {
                 />
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>{t.task}</div>
-                  <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2, fontFamily: "'JetBrains Mono', monospace" }}>{t.detail}</div>
+                  {Array.isArray(t.detail) ? (
+                    <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 4, fontFamily: "'JetBrains Mono', monospace", lineHeight: 1.6 }}>
+                      {t.detail.map((line, i) => <div key={i} style={i === 0 ? { fontWeight: 700, color: C.ink } : undefined}>{i === 0 ? line : `• ${line}`}</div>)}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2, fontFamily: "'JetBrains Mono', monospace" }}>{t.detail}</div>
+                  )}
                 </div>
               </div>
             ))}
@@ -3530,6 +3635,9 @@ function PrepScreen({ planner = [], recipes = [], components = [] }) {
           <p style={{ fontSize: 13, color: C.inkFade, marginTop: 4 }}>
             Scaling metrics for <strong>{totalWeeklyCovers} planned covers</strong> · {totalRemaining} active production tasks remaining
           </p>
+          {forecastNote(forecast) && (
+            <p style={{ fontSize: 11, color: C.inkFade, marginTop: 4, fontStyle: 'italic' }}>{forecastNote(forecast)}</p>
+          )}
         </div>
         {completedKeys.size > 0 && (
           <button 
@@ -3578,9 +3686,39 @@ function PrepScreen({ planner = [], recipes = [], components = [] }) {
   );
 }
 
-function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
+function ShoppingScreen({ planner = [], recipes = [], components = [], forecast = null, kitchenId = '' }) {
   const [clearedKeys, setClearedKeys] = React.useState(new Set());
   const [syncing, setSyncing] = React.useState(false);
+  const [supplierPrices, setSupplierPrices] = React.useState(new Map()); // normName -> [{supplier, price, unit}]
+
+  // Supplier + price per item, from the kitchen's scanned invoices (same data Market Intel uses)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!kitchenId) return;
+      try {
+        const [invRes, lineRes] = await Promise.all([
+          supabase.from('invoices').select('id, supplier').eq('kitchen_id', kitchenId),
+          supabase.from('invoice_lines').select('invoice_id, name, unit, price_per_unit').eq('kitchen_id', kitchenId)
+        ]);
+        if (cancelled) return;
+        const supplierById = new Map((invRes.data || []).map(i => [i.id, (i.supplier || '').trim()]));
+        const map = new Map();
+        (lineRes.data || []).forEach(l => {
+          const supplier = supplierById.get(l.invoice_id);
+          const price = Number(l.price_per_unit) || 0;
+          if (!supplier || price <= 0) return;
+          const key = singular(normName(l.name));
+          if (!map.has(key)) map.set(key, []);
+          map.get(key).push({ supplier, price, unit: l.unit || '' });
+        });
+        setSupplierPrices(map);
+      } catch (err) {
+        console.error("Couldn't load invoice suppliers:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [kitchenId]);
 
   // 1. Fetch previously cleared items from Supabase when the tab mounts
   useEffect(() => {
@@ -3609,43 +3747,84 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
     loadClearedItems();
   }, []);
 
-  // 2. Base math matrix calculations
+  // 2. Order list: each dish scaled to its forecast portions, units converted before adding,
+  //    one line per ingredient + unit family (mass / volume / count), cheapest invoiced supplier.
   const orderList = useMemo(() => {
+    const totalWeeklyCovers = planner.reduce((sum, day) => sum + (parseInt(day.lunch) || 0) + (parseInt(day.dinner) || 0), 0);
+    if (totalWeeklyCovers === 0) return [];
+    const f = forecast || buildDishForecast(recipes, [], [], planner);
     const items = {};
+    const add = (name, amount, unit) => {
+      const q = normalizeQty(amount, unit);
+      const key = `${singular(normName(name))}|${q.family}`;
+      if (!items[key]) items[key] = { key, name, family: q.family, label: q.label, base: 0, usedIn: 0 };
+      items[key].base += q.base;
+      items[key].usedIn += 1;
+    };
+
     recipes.forEach(recipe => {
-      const totalWeeklyCovers = planner.reduce((sum, day) => sum + (parseInt(day.lunch) || 0) + (parseInt(day.dinner) || 0), 0);
-      const baseYield = parseFloat(recipe.yieldAmount) || 1;
-      const scalingFactor = totalWeeklyCovers / baseYield;
-
-      if (totalWeeklyCovers === 0) return;
-
+      const portions = f.byName[recipe.name]?.portions || 0;
+      if (portions <= 0) return;
+      const scalingFactor = portions / (parseFloat(recipe.yieldAmount) || 1);
       (recipe.ingredients || []).forEach(ing => {
-        if (ing.kind === 'raw' || !ing.kind) {
-          const key = `${ing.name}-${ing.supplier || 'Dry Goods'}`;
-          if (!items[key]) {
-            items[key] = { name: ing.name, qty: 0, unit: ing.unit || 'g', supplier: ing.supplier || 'Dry Goods' };
-          }
-          items[key].qty += ((parseFloat(ing.amount || ing.qty) || 0) * scalingFactor);
-        } else if (ing.kind === 'comp') {
+        if (ing.kind === 'comp') {
           const comp = components.find(c => c.id === ing.componentId);
-          if (comp) {
-            const compBatchYield = parseFloat(comp.batchYield) || 1;
-            const compUsageAmount = parseFloat(ing.amount || ing.qty) || 0;
-            const compScaleFactor = (compUsageAmount / compBatchYield) * scalingFactor;
-
-            (comp.ingredients || []).forEach(cing => {
-              const key = `${cing.name}-${cing.supplier || 'Dry Goods'}`;
-              if (!items[key]) {
-                items[key] = { name: cing.name, qty: 0, unit: cing.unit || 'g', supplier: cing.supplier || 'Dry Goods' };
-              }
-              items[key].qty += ((parseFloat(cing.amount || cing.qty) || 0) * compScaleFactor);
-            });
-          }
+          if (!comp) return;
+          const compScale = ((parseFloat(ing.amount || ing.qty) || 0) / (parseFloat(comp.batchYield) || 1)) * scalingFactor;
+          (comp.ingredients || []).forEach(cing => add(cing.name, (parseFloat(cing.amount || cing.qty) || 0) * compScale, cing.unit));
+        } else {
+          add(ing.name, (parseFloat(ing.amount ?? ing.qty) || 0) * scalingFactor, ing.unit);
         }
       });
     });
-    return Object.values(items);
-  }, [planner, recipes, components]);
+
+    // A "to taste / a pinch" line is dropped when the same item already has a real quantity.
+    const list = Object.values(items).filter(it =>
+      it.family !== 'none' || !Object.values(items).some(o => o !== it && o.key.split('|')[0] === it.key.split('|')[0] && o.family !== 'none')
+    );
+
+    const priced = list.map(it => {
+      const offers = supplierPrices.get(it.key.split('|')[0]) || [];
+      // Cheapest offer whose unit is in the same family as this line (so £/kg vs £/ea is never compared)
+      let best = null;
+      offers.forEach(o => {
+        const fam = normalizeQty(1, o.unit).family;
+        const comparable = fam === it.family || (it.family.startsWith('count') && fam.startsWith('count'));
+        if (comparable && (!best || o.price < best.price)) best = o;
+      });
+      if (!best && offers.length) best = offers.reduce((a, b) => (b.price < a.price ? b : a));
+      let estCost = null;
+      if (best && it.family !== 'none') {
+        const unitQ = normalizeQty(1, best.unit);
+        const bothCount = it.family.startsWith('count') && unitQ.family.startsWith('count');
+        if ((unitQ.family === it.family || bothCount) && unitQ.base > 0) estCost = (it.base / unitQ.base) * best.price;
+      }
+      return {
+        ...it,
+        qtyText: formatQty(it.base, it.family, it.label),
+        supplier: best ? best.supplier : 'Not on an invoice',
+        priceText: best ? `£${best.price.toFixed(2)}/${best.unit || 'unit'}` : '',
+        estCost
+      };
+    });
+
+    // One row per ingredient. If recipes use units that can't be converted into each
+    // other (e.g. passata in L and in g), show both amounts instead of adding them.
+    const byItem = new Map();
+    priced.forEach(it => {
+      const nameKey = it.key.split('|')[0];
+      if (!byItem.has(nameKey)) { byItem.set(nameKey, { ...it, key: nameKey, parts: [it.qtyText] }); return; }
+      const row = byItem.get(nameKey);
+      row.parts.push(it.qtyText);
+      row.estCost = (row.estCost ?? 0) + (it.estCost ?? 0) || row.estCost;
+      if (row.supplier === 'Not on an invoice' && it.supplier !== 'Not on an invoice') {
+        row.supplier = it.supplier; row.priceText = it.priceText;
+      }
+    });
+    return [...byItem.values()]
+      .map(r => ({ ...r, qtyText: r.parts.join(' + ') }))
+      .sort((a, b) => a.supplier.localeCompare(b.supplier) || a.name.localeCompare(b.name));
+  }, [planner, recipes, components, forecast, supplierPrices]);
 
   // 3. Handle persistent toggle clicks
   const toggleItemOrdered = async (itemKey) => {
@@ -3711,7 +3890,8 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
   };
 
   // Filter our list cleanly against our persistent records database set
-  const activeOrders = orderList.filter(item => !clearedKeys.has(`${item.name}-${item.supplier || 'Dry Goods'}`));
+  const activeOrders = orderList.filter(item => !clearedKeys.has(item.key));
+  const estTotal = activeOrders.reduce((s, it) => s + (it.estCost || 0), 0);
 
   return (
     <div style={S.container}>
@@ -3720,7 +3900,11 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
           <h1 style={{ fontFamily: "'Bitter', serif", fontSize: 28, fontWeight: 900, color: C.ink }}>Consolidated Orders & Lists</h1>
           <p style={{ fontSize: 13, color: C.inkFade, marginTop: 4 }}>
             Showing {activeOrders.length} items remaining to order out of {orderList.length} requirements
+            {estTotal > 0 && <> · est. <strong>£{estTotal.toFixed(2)}</strong> at the cheapest invoiced prices</>}
           </p>
+          {forecastNote(forecast) && (
+            <p style={{ fontSize: 11, color: C.inkFade, marginTop: 4, fontStyle: 'italic' }}>{forecastNote(forecast)}</p>
+          )}
         </div>
         {clearedKeys.size > 0 && (
           <button 
@@ -3756,7 +3940,7 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
             </div>
 
             {activeOrders.map((item, index) => {
-              const uniqueKey = `${item.name}-${item.supplier || 'Dry Goods'}`;
+              const uniqueKey = item.key;
               return (
                 <div 
                   key={index}
@@ -3774,7 +3958,10 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
                     {item.name}
                   </div>
                   <div style={{ flex: 1, textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: C.accent }}>
-                    {parseFloat(item.qty).toFixed(1)} <span style={{ fontSize: 11, color: C.inkSoft }}>{item.unit}</span>
+                    {item.qtyText}
+                    {item.estCost != null && (
+                      <div style={{ fontSize: 10, color: C.inkFade, fontWeight: 400 }}>≈ £{item.estCost.toFixed(2)}</div>
+                    )}
                   </div>
                   <div style={{ flex: 1, textAlign: 'right' }}>
                     <span style={{ 
@@ -3784,8 +3971,9 @@ function ShoppingScreen({ planner = [], recipes = [], components = [] }) {
                       color: item.supplier === 'Seafood' ? C.blue : item.supplier === 'Butcher' ? C.red : C.inkSoft,
                       padding: '4px 8px', borderRadius: 4, textTransform: 'uppercase'
                     }}>
-                      {item.supplier || 'Dry Goods'}
+                      {item.supplier}
                     </span>
+                    {item.priceText && <div style={{ fontSize: 10, color: C.inkFade, marginTop: 3 }}>{item.priceText}</div>}
                   </div>
                 </div>
               );
