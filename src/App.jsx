@@ -86,6 +86,25 @@ function parseYield(yieldText) {
   return m ? Math.max(1, parseFloat(m[1])) : 1;
 }
 
+// Sell price helpers. A recipe with no price is stored as NULL ("Not set"),
+// never as 0, so the kitchen can see which dishes still need pricing.
+function parsePriceOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (text === '') return null;
+  const n = parseFloat(text);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+function formatEditedBy(email, isoDate) {
+  if (!email && !isoDate) return '';
+  const who = email || 'a kitchen member';
+  let when = '';
+  if (isoDate) {
+    try { when = ' · ' + new Date(isoDate).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch {}
+  }
+  return `Last edited by ${who}${when}`;
+}
+
 // Group flat ingredient-row scanner output into one logical recipe per
 // unique recipe_name, with a structured ingredients array attached.
 function groupRecipesByName(rows) {
@@ -94,7 +113,7 @@ function groupRecipesByName(rows) {
   rows.forEach(row => {
     const name = (row.recipe_name || row.name || '').trim() || 'Untitled';
     if (!byName.has(name)) {
-      const sellPrice = parseFloat(row.sell_price ?? row.sellPrice ?? 0) || 0;
+      const sellPrice = parsePriceOrNull(row.sell_price ?? row.sellPrice);
       byName.set(name, {
         id: row.recipe_id || row.id, // first row's id as the recipe handle
         recipe_id: row.recipe_id || row.id,
@@ -735,6 +754,7 @@ const groupedRecipes = groupRecipesByName(dbRecipes.length > 0 ? dbRecipes : rec
             kitchenId={activeKitchenId || session?.user?.id || ""}
             recipes={recipes || []}
             onUpdateRecipes={(val) => update({ recipes: val })}
+            settings={settings || {}}
           />
         )}
       </div>
@@ -1916,15 +1936,15 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
   // The configured sell price (use the highest non-zero value across the group)
   const groupSellPrice = useMemo(() => {
     const prices = activeRecipeRows
-      .map(r => parseFloat(r.sell_price || 0) || 0)
-      .filter(p => p > 0);
-    return prices.length > 0 ? Math.max(...prices) : 0;
+      .map(r => parsePriceOrNull(r.sell_price))
+      .filter(p => p !== null);
+    return prices.length > 0 ? Math.max(...prices) : null;
   }, [activeRecipeRows]);
 
   // Handle active value sync defaults
   useEffect(() => {
     if (activeRecipeRows.length > 0) {
-      setEditSellPrice(groupSellPrice ? String(groupSellPrice) : "0.00");
+      setEditSellPrice(groupSellPrice !== null ? String(groupSellPrice) : "");
     }
   }, [activeRecipeRows, selectedRecipeName, groupSellPrice]);
 
@@ -2099,10 +2119,11 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
 
     // Sell price is per portion; recipe cost is for the whole batch.
     // Compare like with like — convert both to per-portion before computing FC%.
-    const targetPrice = parseFloat(editSellPrice || 0) || activeRecipeRows[0]?.sell_price || 0;
+    // null = no price set yet; FC% / GP% can't be calculated without one
+    const targetPrice = parsePriceOrNull(editSellPrice);
     const costPerPortion = combinedRecipeCost / safePortions;
-    const foodCostPercentage = targetPrice > 0 ? (costPerPortion / targetPrice) * 100 : 0;
-    const grossProfitPercentage = targetPrice > 0 ? ((targetPrice - costPerPortion) / targetPrice) * 100 : 0;
+    const foodCostPercentage = targetPrice !== null ? (costPerPortion / targetPrice) * 100 : null;
+    const grossProfitPercentage = targetPrice !== null ? ((targetPrice - costPerPortion) / targetPrice) * 100 : null;
 
     return {
       ingredientsList: items,
@@ -2122,9 +2143,11 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
     e.preventDefault();
     if (!supabaseClient || activeRecipeRows.length === 0) return;
 
-    const newPrice = parseFloat(editSellPrice);
-    if (!Number.isFinite(newPrice) || newPrice < 0) {
-      setErrorMessage("Enter a valid sell price before saving.");
+    // Blank = clear the price (stored as NULL). Otherwise it must be a positive number.
+    const priceText = String(editSellPrice ?? '').trim();
+    const newPrice = priceText === '' ? null : parsePriceOrNull(priceText);
+    if (priceText !== '' && newPrice === null) {
+      setErrorMessage("Enter a sell price above 0, or leave it blank to mark it as not set.");
       return;
     }
 
@@ -2134,18 +2157,27 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
     try {
       const rowIdsToUpdate = activeRecipeRows.map(r => r.id);
       
-      const { error } = await supabaseClient
+      const { data: updatedRows, error } = await supabaseClient
         .from('recipes')
-        .update({ sell_price: newPrice })
-        .in('id', rowIdsToUpdate);
+        .update({
+          sell_price: newPrice,
+          last_edited_by: user?.id || null,
+          last_edited_by_email: user?.email || null,
+          last_edited_at: new Date().toISOString()
+        })
+        .in('id', rowIdsToUpdate)
+        .select('id');
 
       if (error) throw error;
+      if (!updatedRows || updatedRows.length === 0) {
+        throw new Error("The price wasn't saved: 0 rows were updated. A Row-Level-Security UPDATE policy on 'recipes' is probably blocking this account.");
+      }
 
       window.dispatchEvent(new Event('mise-db-update'));
       fetchRecipesAndInvoices();
     } catch (err) {
       console.error(err);
-      setErrorMessage("Could not update target retail valuations.");
+      setErrorMessage(err?.message || "Could not save the sell price.");
     } finally {
       setUpdating(false);
     }
@@ -2238,6 +2270,7 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
                     type="number" 
                     step="0.01" 
                     value={editSellPrice} 
+                    placeholder="Not set"
                     onChange={(e) => setEditSellPrice(e.target.value)} 
                     style={{ width: '100%', boxSizing: 'border-box', background: '#000', color: '#fff', border: '1px solid #333', padding: '8px 8px 8px 24px', borderRadius: 4, fontSize: 13, fontFamily: 'monospace' }} 
                   />
@@ -2283,27 +2316,38 @@ export function RecipesScreen({ kitchenId, recipes = [], components = [], invoic
             <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: paletteColors.inkFade, textTransform: 'uppercase' }}>Configured Target Sell Price</div>
               <div style={{ fontSize: 26, fontWeight: 900, color: paletteColors.accent, fontFamily: 'monospace', marginTop: 4 }}>
-                {currencySymbol}{evaluatedCostingData.sellPrice.toFixed(2)}
+                {evaluatedCostingData.sellPrice !== null
+                  ? `${currencySymbol}${evaluatedCostingData.sellPrice.toFixed(2)}`
+                  : <span style={{ color: paletteColors.red }}>Not set</span>}
               </div>
-              <div style={{ fontSize: 10, color: paletteColors.inkFade, marginTop: 4 }}>Per portion</div>
+              <div style={{ fontSize: 10, color: paletteColors.inkFade, marginTop: 4 }}>
+                {evaluatedCostingData.sellPrice !== null ? 'Per portion' : 'Add a sell price above to see FC% and GP%'}
+              </div>
+              {formatEditedBy(activeRecipeRows[0]?.last_edited_by_email, activeRecipeRows[0]?.last_edited_at) && (
+                <div style={{ fontSize: 10, color: paletteColors.inkFade, marginTop: 6 }}>
+                  {formatEditedBy(activeRecipeRows[0]?.last_edited_by_email, activeRecipeRows[0]?.last_edited_at)}
+                </div>
+              )}
             </div>
 
             <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: 10, fontWeight: 800, color: paletteColors.inkFade, textTransform: 'uppercase' }}>Food Cost Percentage (FC%)</span>
-                <span style={{ fontSize: 10, background: evaluatedCostingData.fcPercent > 35 ? paletteColors.red : paletteColors.green, color: '#fff', padding: '2px 6px', borderRadius: 3, fontWeight: 800 }}>
-                  {evaluatedCostingData.fcPercent > 35 ? "CRITICAL RISK" : "ALIGNED"}
-                </span>
+                {evaluatedCostingData.fcPercent !== null && (
+                  <span style={{ fontSize: 10, background: evaluatedCostingData.fcPercent > 35 ? paletteColors.red : paletteColors.green, color: '#fff', padding: '2px 6px', borderRadius: 3, fontWeight: 800 }}>
+                    {evaluatedCostingData.fcPercent > 35 ? "CRITICAL RISK" : "ALIGNED"}
+                  </span>
+                )}
               </div>
-              <div style={{ fontSize: 26, fontWeight: 900, color: evaluatedCostingData.fcPercent > 35 ? paletteColors.red : paletteColors.green, fontFamily: 'monospace', marginTop: 4 }}>
-                {evaluatedCostingData.fcPercent.toFixed(1)}%
+              <div style={{ fontSize: 26, fontWeight: 900, color: evaluatedCostingData.fcPercent === null ? paletteColors.inkFade : evaluatedCostingData.fcPercent > 35 ? paletteColors.red : paletteColors.green, fontFamily: 'monospace', marginTop: 4 }}>
+                {evaluatedCostingData.fcPercent !== null ? `${evaluatedCostingData.fcPercent.toFixed(1)}%` : '—'}
               </div>
             </div>
 
             <div style={{ background: '#121210', padding: 14, borderRadius: 4, border: `1px solid ${paletteColors.inkRule}` }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: paletteColors.inkFade, textTransform: 'uppercase' }}>Gross Operating Profit Margin (GP%)</div>
-              <div style={{ fontSize: 26, fontWeight: 900, color: evaluatedCostingData.gpPercent < 65 ? paletteColors.red : paletteColors.blue, fontFamily: 'monospace', marginTop: 4 }}>
-                {evaluatedCostingData.gpPercent.toFixed(1)}%
+              <div style={{ fontSize: 26, fontWeight: 900, color: evaluatedCostingData.gpPercent === null ? paletteColors.inkFade : evaluatedCostingData.gpPercent < 65 ? paletteColors.red : paletteColors.blue, fontFamily: 'monospace', marginTop: 4 }}>
+                {evaluatedCostingData.gpPercent !== null ? `${evaluatedCostingData.gpPercent.toFixed(1)}%` : '—'}
               </div>
             </div>
 
@@ -5359,7 +5403,8 @@ function PosScreen({ sales, recipes, onUpdate }) {
 // ============================================================
 // 10. RECIPE DIGITIZER (STATUS: BROKEN FIX & SCAN-VERIFY IMPLEMENTED)
 // ============================================================
-export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
+export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes, settings = {} }) {
+  const currencySymbol = settings?.currency || '£';
   const authContext = typeof useAuth === 'function' ? useAuth() : { user: { id: 'mock-chef-id' } };
   const user = authContext?.user;
   const supabaseClient = typeof supabase !== 'undefined' ? supabase : (window.supabase || null);
@@ -5376,7 +5421,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
   const [scannedRecipeName, setScannedRecipeName] = useState("");
   const [scannedCategory, setScannedCategory] = useState("Mains");
   const [scannedYield, setScannedYield] = useState("1 Portion");
-  const [scannedSellPrice, setScannedSellPrice] = useState("18.00");
+  const [scannedSellPrice, setScannedSellPrice] = useState("");
   const [editingOriginalName, setEditingOriginalName] = useState(null); // null = adding new
 
   // --- DEVICE CAPTURE STATE (attach + take photo) ---
@@ -5583,7 +5628,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
       setScannedRecipeName(name);
       setScannedCategory(category);
       setScannedYield(yieldSize);
-      setScannedSellPrice(sell ? String(sell) : "18.00");
+      setScannedSellPrice(parsePriceOrNull(sell) !== null ? String(parsePriceOrNull(sell)) : "");
       setScannedText(ingredientLines);
 
       if (!ingredientLines.trim()) {
@@ -5617,7 +5662,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
     setScannedRecipeName("");
     setScannedCategory("Mains");
     setScannedYield("1 Portion");
-    setScannedSellPrice("18.00");
+    setScannedSellPrice("");
     // A single space opens the review panel; the chef can type ingredient lines from here
     setScannedText(" ");
   };
@@ -5631,7 +5676,8 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
     setScannedRecipeName(groupObj.name || "");
     setScannedCategory(groupObj.category || "Mains");
     setScannedYield(groupObj.yield || "1 Portion");
-    setScannedSellPrice(groupObj.sell_price != null ? String(groupObj.sell_price) : "0.00");
+    const existingPrice = parsePriceOrNull(groupObj.sell_price);
+    setScannedSellPrice(existingPrice !== null ? String(existingPrice) : "");
     setScannedText((groupObj.ingredients || []).join('\n'));
     // Scroll the review panel into view on phones
     if (typeof window !== 'undefined') setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 50);
@@ -5697,10 +5743,11 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
       return;
     }
 
-    // Require a real sell price so a recipe can never save at £0 silently
-    const priceCheck = parseFloat(scannedSellPrice);
-    if (!Number.isFinite(priceCheck) || priceCheck <= 0) {
-      setErrorMessage("Set a sell price (per portion) before saving this recipe.");
+    // Sell price is optional. Blank = NULL ("Not set"); anything typed must be above 0.
+    const priceText = String(scannedSellPrice ?? '').trim();
+    const sellValue = priceText === '' ? null : parsePriceOrNull(priceText);
+    if (priceText !== '' && sellValue === null) {
+      setErrorMessage("Sell price must be above 0, or leave it blank to add it later.");
       return;
     }
 
@@ -5718,7 +5765,6 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
         throw new Error("No valid ingredient rows found in the review box.");
       }
 
-      const sellValue = parseFloat(scannedSellPrice) || 0;
       const nowIso = new Date().toISOString();
 
       const totalInsertRows = individualLines.map((ingredientRowText) => ({
@@ -5731,6 +5777,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
         created_at: nowIso,
         created_by: user?.id || null,
         last_edited_by: user?.id || null,
+        last_edited_by_email: user?.email || null,
         last_edited_at: nowIso
       }));
 
@@ -5763,7 +5810,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
       setScannedRecipeName("");
       setScannedCategory("Mains");
       setScannedYield("1 Portion");
-      setScannedSellPrice("18.00");
+      setScannedSellPrice("");
       clearStagedFile();
 
       // Notify other tabs that the database changed
@@ -5961,7 +6008,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
                   </label>
                   <label style={{ fontSize: 11, color: '#aaa' }}>
                     Sell Price ({"\u00A3"})
-                    <input type="number" step="0.01" value={scannedSellPrice} onChange={(e) => setScannedSellPrice(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
+                    <input type="number" step="0.01" min="0" placeholder="Not set" value={scannedSellPrice} onChange={(e) => setScannedSellPrice(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
                   </label>
                 </div>
 
@@ -6017,6 +6064,9 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
                         <span style={{ fontSize: 13, fontWeight: '600', color: '#fff' }}>{rec.name}</span>
                         <span style={{ fontSize: 10, color: C.inkFade, marginTop: 3 }}>
                           Category: {rec.category || 'Main'}
+                          {parsePriceOrNull(rec.sell_price) === null && (
+                            <span style={{ color: C.red, fontWeight: 700 }}> · No sell price</span>
+                          )}
                         </span>
                       </div>
                     </div>
@@ -6067,8 +6117,10 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
                   </div>
                   <div>
                     <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Sell Price</div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: C.green, marginTop: 1 }}>
-                      {"\u00A3"}{activeViewObj.sell_price ? parseFloat(activeViewObj.sell_price).toFixed(2) : '0.00'}
+                    <div style={{ fontSize: 13, fontWeight: 600, color: parsePriceOrNull(activeViewObj.sell_price) !== null ? C.green : C.red, marginTop: 1 }}>
+                      {parsePriceOrNull(activeViewObj.sell_price) !== null
+                        ? `${currencySymbol}${parsePriceOrNull(activeViewObj.sell_price).toFixed(2)}`
+                        : 'Not set'}
                     </div>
                   </div>
                 </div>
@@ -6077,6 +6129,12 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes }) {
                   <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase' }}>Yield</div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, marginTop: 1 }}>{activeViewObj.yield || '1 Portion'}</div>
                 </div>
+
+                {formatEditedBy(activeViewObj.last_edited_by_email, activeViewObj.last_edited_at) && (
+                  <div style={{ fontSize: 11, color: C.inkFade }}>
+                    {formatEditedBy(activeViewObj.last_edited_by_email, activeViewObj.last_edited_at)}
+                  </div>
+                )}
 
                 <div>
                   <div style={{ fontSize: 9, fontWeight: 700, color: C.inkFade, textTransform: 'uppercase', marginBottom: 6 }}>
