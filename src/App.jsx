@@ -4106,6 +4106,83 @@ function ShoppingScreen({ planner = [], recipes = [], components = [], forecast 
   );
 }
 
+// ============================================================
+// DELETE CONFIRM + UNDO (shared by Sales Analytics and Waste Tracker)
+// ============================================================
+function ConfirmDeleteDialog({ open, title, message, confirmLabel = 'Delete', onConfirm, onCancel }) {
+  const confirmRef = React.useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const t = setTimeout(() => confirmRef.current?.focus(), 30);
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    window.addEventListener('keydown', onKey);
+    return () => { clearTimeout(t); window.removeEventListener('keydown', onKey); };
+  }, [open, onCancel]);
+  if (!open) return null;
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(26,26,24,0.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div role="alertdialog" aria-modal="true" aria-labelledby="mise-del-title"
+        style={{ background: '#fff', borderRadius: 10, width: 'min(440px, 100%)', boxShadow: '0 24px 50px -16px rgba(0,0,0,0.45)', overflow: 'hidden' }}>
+        <div style={{ padding: '20px 22px', display: 'flex', gap: 14 }}>
+          <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#f9e6e1', color: '#b8362a', display: 'grid', placeItems: 'center', fontWeight: 800, flex: 'none' }}>!</div>
+          <div>
+            <h3 id="mise-del-title" style={{ margin: 0, fontSize: 18, fontFamily: "'Bitter', serif", color: '#0e0e0c' }}>{title}</h3>
+            <p style={{ margin: '6px 0 0', fontSize: 14, color: '#5a4f40', lineHeight: 1.5 }}>{message}</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '12px 22px', background: '#faf7f2', borderTop: '1px solid #ece4d6' }}>
+          <button type="button" onClick={onCancel}
+            style={{ minHeight: 40, padding: '0 16px', borderRadius: 6, border: '1.5px solid #d9d2c8', background: '#fff', fontWeight: 600, cursor: 'pointer' }}>Keep it</button>
+          <button type="button" ref={confirmRef} onClick={onConfirm}
+            style={{ minHeight: 40, padding: '0 16px', borderRadius: 6, border: 0, background: '#b8362a', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UndoBar({ message, onUndo }) {
+  if (!message) return null;
+  return (
+    <div role="status" style={{ position: 'fixed', left: '50%', bottom: 24, transform: 'translateX(-50%)', background: '#1a1a18', color: '#fff', padding: '10px 12px 10px 16px', borderRadius: 8, display: 'flex', gap: 14, alignItems: 'center', zIndex: 1001, boxShadow: '0 12px 30px -10px rgba(0,0,0,0.5)', maxWidth: 'calc(100vw - 32px)' }}>
+      <span style={{ fontSize: 14 }}>{message}</span>
+      <button type="button" onClick={onUndo} style={{ background: 'none', border: 0, color: '#e0a030', fontWeight: 700, cursor: 'pointer', padding: '6px 8px' }}>Undo</button>
+    </div>
+  );
+}
+
+// Delete with confirm + 6-second undo. `onUpdate` receives the full new list.
+function useDeleteWithUndo(list, onUpdate) {
+  const [pending, setPending] = useState(null);      // { index, title, message }
+  const [undo, setUndo] = useState(null);            // { item, index, label }
+  const timer = React.useRef(null);
+  const ask = (index, title, message) => setPending({ index, title, message });
+  const cancel = React.useCallback(() => setPending(null), []);
+  const confirm = (label) => {
+    if (!pending) return;
+    const item = list[pending.index];
+    onUpdate(list.filter((_, i) => i !== pending.index));
+    setUndo({ item, index: pending.index, label });
+    setPending(null);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setUndo(null), 6000);
+  };
+  const undoLast = () => {
+    if (!undo) return;
+    const next = [...list];
+    next.splice(Math.min(undo.index, next.length), 0, undo.item);
+    onUpdate(next);
+    setUndo(null);
+    clearTimeout(timer.current);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return { pending, ask, cancel, confirm, undo, undoLast };
+}
+
+const rowDeleteBtn = { minHeight: 34, padding: '0 10px', borderRadius: 6, border: '1.5px solid #e8c2b8', background: '#fff', color: '#b8362a', fontWeight: 600, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' };
+const rowEditBtn = { minHeight: 34, padding: '0 10px', borderRadius: 6, border: '1.5px solid #d9d2c8', background: '#fff', color: '#1a1a18', fontWeight: 600, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' };
+
 // Manual sales entry (the SOP's daily entry). Adds to an existing day/session/dish line if present.
 function AddSaleForm({ recipes = [], dishes = [], sales = [], onUpdate }) {
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -4152,6 +4229,8 @@ function AddSaleForm({ recipes = [], dishes = [], sales = [], onUpdate }) {
 
 function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = [] }) {
   const currencySymbol = settings?.currency || '£';
+  const del = useDeleteWithUndo(sales, onUpdate);
+  const saleLabel = (s) => { const r = recipes.find(x => x.id === s.recipeId); return `${s.sold} × ${r ? r.name : 'Unmapped item'} (${s.day} ${s.session})`; };
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -4178,9 +4257,10 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = []
             const recipe = recipes.find(r => r.id === s.recipeId);
             return (
               <div key={idx} style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 13 }}>{s.day}</span>
-                  <span style={{ fontSize: 12, color: C.inkFade, textTransform: 'uppercase' }}>{s.session}</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: 13 }}>{s.day} · {s.session}</span>
+                  <button type="button" style={rowDeleteBtn} aria-label={`Delete ${saleLabel(s)}`}
+                    onClick={() => del.ask(idx, 'Delete this sale?', `${saleLabel(s)} will be removed from sales and financial totals.`)}>Delete</button>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 10 }}>
                   {recipe ? recipe.name : 'Unmapped Item'}
@@ -4199,6 +4279,9 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = []
             );
           })}
         </div>
+        <ConfirmDeleteDialog open={!!del.pending} title={del.pending?.title} message={del.pending?.message} confirmLabel="Delete sale"
+          onCancel={del.cancel} onConfirm={() => del.confirm(`Deleted ${saleLabel(sales[del.pending.index])}`)} />
+        <UndoBar message={del.undo?.label} onUndo={del.undoLast} />
       </div>
     );
   }
@@ -4209,6 +4292,16 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = []
 }
 
 function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
+  const del = useDeleteWithUndo(sales, onUpdate);
+  const saleLabel = (s) => { const r = recipes.find(x => x.id === s.recipeId); return `${s.sold} × ${r ? r.name : 'Unmapped item'} (${s.day} ${s.session})`; };
+  const askDelete = (idx) => del.ask(idx, 'Delete this sale?', `${saleLabel(sales[idx])} will be removed from sales and financial totals.`);
+  const dialogs = (
+    <>
+      <ConfirmDeleteDialog open={!!del.pending} title={del.pending?.title} message={del.pending?.message} confirmLabel="Delete sale"
+        onCancel={del.cancel} onConfirm={() => del.confirm(`Deleted ${saleLabel(sales[del.pending.index])}`)} />
+      <UndoBar message={del.undo?.label} onUndo={del.undoLast} />
+    </>
+  );
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -4233,6 +4326,7 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
                   <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: C.ink }}>
                     {s.day} · {s.session}
                   </div>
+                  <button type="button" style={rowDeleteBtn} aria-label={`Delete ${saleLabel(s)}`} onClick={() => askDelete(idx)}>Delete</button>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 8, wordBreak: 'break-word' }}>
                   {recipe ? recipe.name : 'Unmapped Item'}
@@ -4254,6 +4348,7 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
             );
           })}
         </div>
+        {dialogs}
       </div>
     );
   }
@@ -4280,6 +4375,7 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
               <th style={{ padding: 10 }}><SectionLabel label="Session" /></th>
               <th style={{ padding: 10 }}><SectionLabel label="Recipe Mapping" /></th>
               <th style={{ padding: 10 }}><SectionLabel label="Quantity Cleared" /></th>
+              <th style={{ padding: 10 }}><span style={{ position: 'absolute', left: -9999 }}>Actions</span></th>
             </tr>
           </thead>
           <tbody>
@@ -4297,6 +4393,9 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
                       onUpdate(next);
                     }} />
                   </td>
+                  <td style={{ padding: 12, textAlign: 'right' }}>
+                    <button type="button" style={rowDeleteBtn} aria-label={`Delete ${saleLabel(s)}`} onClick={() => askDelete(idx)}>Delete</button>
+                  </td>
                 </tr>
               );
             })}
@@ -4304,6 +4403,7 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
         </table>
       </div>
       )}
+      {dialogs}
     </div>
   );
 }
@@ -4313,6 +4413,30 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
 // ============================================================
 function WasteScreen({ waste = [], onUpdate, settings = {} }) {
   const currencySymbol = settings?.currency || '£';
+  const del = useDeleteWithUndo(waste, onUpdate);
+  const [editIdx, setEditIdx] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const [editErr, setEditErr] = useState('');
+  const wasteLabel = (w) => {
+    const q = parseFloat(w.qty || 0), c = parseFloat(w.cost ?? w.costPrice ?? 0);
+    return `${w.item || w.itemName || 'Item'}, ${q} ${w.unit || ''} (${currencySymbol}${(q * c).toFixed(2)})`;
+  };
+  const startEdit = (idx) => {
+    const w = waste[idx];
+    setEditIdx(idx); setEditErr('');
+    setEditDraft({ item: w.item || w.itemName || '', qty: String(w.qty ?? ''), unit: w.unit || '', cost: String(w.cost ?? w.costPrice ?? ''), reason: w.reason || 'Spoilage' });
+  };
+  const saveEdit = () => {
+    const qty = parseFloat(editDraft.qty), cost = parseFloat(editDraft.cost);
+    if (!editDraft.item.trim()) { setEditErr('Enter the item name.'); return; }
+    if (!Number.isFinite(qty) || qty <= 0) { setEditErr('Quantity must be above 0.'); return; }
+    if (!Number.isFinite(cost) || cost < 0) { setEditErr('Enter the cost per unit (0 or more).'); return; }
+    const next = [...waste];
+    next[editIdx] = { ...next[editIdx], item: editDraft.item.trim(), ingredient: editDraft.item.trim(), qty, unit: editDraft.unit.trim(), cost, reason: editDraft.reason };
+    onUpdate(next);
+    setEditIdx(null); setEditDraft(null);
+  };
+  const editField = { width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: '1px solid #c9bfae', borderRadius: 4, background: '#fff', fontSize: 13 };
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto", padding: "4px 0" }}>
@@ -4503,9 +4627,36 @@ function WasteScreen({ waste = [], onUpdate, settings = {} }) {
                       </span>
                     </div>
                     
-                    {/* Datetime stamp notation */}
-                    <div style={{ fontSize: 10, color: '#5a4f40', textAlign: "right", opacity: 0.8 }}>
-                      {log.date || 'Active Entry'}
+                    {editIdx === idx && editDraft && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, background: '#fff', padding: 10, borderRadius: 4, border: '1px solid #c9bfae' }}>
+                        <label style={{ gridColumn: '1 / -1', fontSize: 11, fontWeight: 700, color: '#5a4f40' }}>Item
+                          <input style={editField} value={editDraft.item} onChange={e => setEditDraft({ ...editDraft, item: e.target.value })} /></label>
+                        <label style={{ fontSize: 11, fontWeight: 700, color: '#5a4f40' }}>Quantity
+                          <input style={editField} type="number" step="any" min="0" value={editDraft.qty} onChange={e => setEditDraft({ ...editDraft, qty: e.target.value })} /></label>
+                        <label style={{ fontSize: 11, fontWeight: 700, color: '#5a4f40' }}>Unit
+                          <input style={editField} value={editDraft.unit} onChange={e => setEditDraft({ ...editDraft, unit: e.target.value })} /></label>
+                        <label style={{ fontSize: 11, fontWeight: 700, color: '#5a4f40' }}>Cost per unit ({currencySymbol})
+                          <input style={editField} type="number" step="0.01" min="0" value={editDraft.cost} onChange={e => setEditDraft({ ...editDraft, cost: e.target.value })} /></label>
+                        <label style={{ fontSize: 11, fontWeight: 700, color: '#5a4f40' }}>Reason
+                          <select style={editField} value={editDraft.reason} onChange={e => setEditDraft({ ...editDraft, reason: e.target.value })}>
+                            {['Spoilage', 'Over-production', 'Dropped/Spilled', 'Returned', 'Other', ...(['Spoilage','Over-production','Dropped/Spilled','Returned','Other'].includes(editDraft.reason) ? [] : [editDraft.reason])].map(r => <option key={r}>{r}</option>)}
+                          </select></label>
+                        {editErr && <div style={{ gridColumn: '1 / -1', color: '#b8362a', fontSize: 12 }}>{editErr}</div>}
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                          <button type="button" style={rowEditBtn} onClick={() => { setEditIdx(null); setEditDraft(null); }}>Cancel</button>
+                          <button type="button" style={{ ...rowEditBtn, background: '#1a1a18', color: '#fff', borderColor: '#1a1a18' }} onClick={saveEdit}>Save changes</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Datetime stamp + row actions */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {editIdx !== idx && <button type="button" style={rowEditBtn} aria-label={`Edit ${wasteLabel(log)}`} onClick={() => startEdit(idx)}>Edit</button>}
+                        <button type="button" style={rowDeleteBtn} aria-label={`Delete ${wasteLabel(log)}`}
+                          onClick={() => del.ask(idx, 'Delete this waste entry?', `${wasteLabel(log)} will be removed from waste and financial totals.`)}>Delete</button>
+                      </div>
+                      <div style={{ fontSize: 10, color: '#5a4f40', opacity: 0.8 }}>{log.date || 'Active Entry'}</div>
                     </div>
                   </div>
                 );
@@ -4513,6 +4664,9 @@ function WasteScreen({ waste = [], onUpdate, settings = {} }) {
             </div>
           )}
         </div>
+        <ConfirmDeleteDialog open={!!del.pending} title={del.pending?.title} message={del.pending?.message} confirmLabel="Delete entry"
+          onCancel={del.cancel} onConfirm={() => { if (editIdx !== null) { setEditIdx(null); setEditDraft(null); } del.confirm(`Deleted ${wasteLabel(waste[del.pending.index])}`); }} />
+        <UndoBar message={del.undo?.label} onUndo={del.undoLast} />
 
       </div>
     </div>
