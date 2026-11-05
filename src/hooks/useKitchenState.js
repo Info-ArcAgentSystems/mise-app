@@ -125,6 +125,7 @@ export function useKitchenState(kitchenId) {
         ? {
             role: settings.data.role_concept,
             currency: settings.data.currency,
+            region: settings.data.region || null, // e.g. 'UK' – disambiguates £ (UK vs Egypt)
             unitSystem: settings.data.unit_system,
             timezone: settings.data.timezone,
           }
@@ -307,13 +308,20 @@ export function useKitchenState(kitchenId) {
 // =============================================================================
 async function syncDelta(kitchenId, delta, next) { if (!kitchenId) return; await supabase.from('kitchens').upsert({ id: kitchenId }, { onConflict: 'id' }); if ('components' in delta) await syncComponents(kitchenId, next.components); if ('recipes' in delta) await syncRecipes(kitchenId, next.recipes); if ('settings' in delta) await syncSettings(kitchenId, next.settings); if ('planner' in delta) await syncPlanner(kitchenId, next.planner); if ('sales' in delta) await syncSales(kitchenId, next.sales); if ('waste' in delta) await syncWaste(kitchenId, next.waste); if ('invoices' in delta) await syncInvoices(kitchenId, next.invoices); if ('scanHistory' in delta) await syncScanHistory(kitchenId, next.scanHistory); if ('sousMessages' in delta) await syncSousMessages(kitchenId, next.sousMessages); if ('posConnections' in delta || 'posLastSync' in delta) { await syncPos(kitchenId, next.posConnections, next.posLastSync); } }
 async function syncSettings(kitchenId, s) {
-  await supabase.from('kitchen_settings').upsert({
+  const row = {
     kitchen_id: kitchenId,
     role_concept: s.role,
     currency: s.currency,
+    region: s.region || null,
     unit_system: s.unitSystem,
     timezone: s.timezone,
-  });
+  };
+  const { error } = await supabase.from('kitchen_settings').upsert(row);
+  // If the `region` column hasn't been added yet, still save everything else.
+  if (error && /region/i.test(error.message || '')) {
+    delete row.region;
+    await supabase.from('kitchen_settings').upsert(row);
+  }
 }
 
 async function syncPlanner(kitchenId, planner) {

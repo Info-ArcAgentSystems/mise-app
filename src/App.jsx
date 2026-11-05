@@ -332,6 +332,18 @@ const portions = m && parseFloat(m[1]) > 0 ? parseFloat(m[1]) : 1;
 return { totalCost: total, costPerPortion: total / portions };
 }
 
+// Forecast confidence badge (calculateForecastConfidence): mode moves
+// BOOTSTRAP -> HYBRID -> AUTONOMOUS as sales records build up.
+function ForecastBadge({ metrics }) {
+  if (!metrics) return null;
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8, fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}>
+      <span style={{ background: metrics.color, color: '#fff', padding: '3px 8px', borderRadius: 3, fontWeight: 700 }}>{metrics.mode}</span>
+      <span style={{ color: '#3a3530' }}>Forecast confidence <strong>{metrics.confidence}%</strong> · {metrics.count} sales record{metrics.count === 1 ? '' : 's'}</span>
+    </div>
+  );
+}
+
 // Group flat ingredient-row scanner output into one logical recipe per
 // unique recipe_name, with a structured ingredients array attached.
 function groupRecipesByName(rows) {
@@ -1003,7 +1015,7 @@ const sousWaste = wasteView.map(w => ({ item: w.item, qty: w.qty, unit: w.unit, 
       {/* Render Active Functional Screens */}
       {/* Render Active Functional Screens */}
       <div style={S.main}>
-        {tab === 'dashboard' && <Dashboard recipes={recipes} components={dbComponents} planner={planner} sales={canonicalSales} waste={wasteView} totals={kitchenTotals} settings={settings} setTab={setTab} updateState={update} />}
+        {tab === 'dashboard' && <Dashboard recipes={recipes} components={dbComponents} planner={planner} sales={canonicalSales} waste={wasteView} totals={kitchenTotals} forecastMetrics={forecastMetrics} settings={settings} setTab={setTab} updateState={update} />}
         {tab === 'servicereport' && <ServiceReport recipes={groupedRecipes || []} components={dbComponents || []} sales={canonicalSales} waste={wasteView} totals={kitchenTotals} planner={planner || []} settings={settings || {}} />}
         {tab === 'planner' && <PlannerScreen planner={planner} onUpdate={handlePlannerUpdate} />}
         {/* FIX: Wired invoices state array downstream so matching costs align instantly */}
@@ -1019,7 +1031,7 @@ const sousWaste = wasteView.map(w => ({ item: w.item, qty: w.qty, unit: w.unit, 
   />
 )}
         {tab === 'components' && <ComponentsScreen kitchenId={activeKitchenId || session?.user?.id || ""} components={dbComponents || []} recipes={groupedRecipes || []} settings={settings || {}} tableReady={componentsTableReady} loadError={componentsLoadError} onRetry={retryComponentsLoad} />}
-        {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={dbComponents} forecast={dishForecast} />}
+        {tab === 'prep' && <PrepScreen planner={planner} recipes={groupedRecipes} components={dbComponents} forecast={dishForecast} forecastMetrics={forecastMetrics} />}
         {tab === 'shopping' && <ShoppingScreen planner={planner} recipes={groupedRecipes} components={dbComponents} forecast={dishForecast} kitchenId={activeKitchenId || session?.user?.id || ""} />}
         {tab === 'sales' && <SalesScreen sales={sales} recipes={recipes} dishes={groupedRecipes} onUpdate={(val) => update({ sales: val })} settings={settings} />}
         {tab === 'waste' && <WasteScreen waste={wasteView} onUpdate={(val) => update({ waste: val })} settings={settings} />}
@@ -1532,8 +1544,13 @@ function SettingsScreen({ settings, onUpdate, canEdit = true }) {
       // If region is completely missing from the DB table row, fall back to currency checking, excluding Cuba if Pesos are selected
       let derivedRegion = settings.region;
       if (!derivedRegion) {
-        if (settings.currency === "₱") {
-          derivedRegion = "PH"; // Route explicitly to Philippines to break the Cuba loop
+        // Many regions share a symbol (£ = UK, Egypt, Lebanon…; $ = US, Argentina…).
+        // Without a saved region, pick the most likely one instead of the first
+        // alphabetical match (which showed "Egypt" for £).
+        const PREFERRED = { '£': 'UK', '$': 'US', '€': 'IE', '₱': 'PH', '¥': 'JP', 'kr': 'SE', 'R': 'ZA' };
+        const preferred = PREFERRED[settings.currency];
+        if (preferred && regions.some(r => r.code === preferred)) {
+          derivedRegion = preferred;
         } else {
           const matched = regions.find(r => r.currency === settings.currency);
           derivedRegion = matched ? matched.code : "UK";
@@ -1976,6 +1993,7 @@ function Dashboard(props) {
       <div style={{ marginBottom: 16 }}>
         <h2 style={{ fontFamily: "'Bitter', serif", fontSize: isMobile ? 22 : 28, margin: '0 0 2px 0', color: '#0e0e0c' }}>The Pass</h2>
         <p style={{ margin: 0, fontSize: isMobile ? 12 : 14, color: '#5a4f40', opacity: 0.85 }}>Live shift reporting, structural yield targets, and financial leak margins</p>
+        <ForecastBadge metrics={props.forecastMetrics} />
       </div>
 
       {/* Financial Overview Cards Row Layout - Responsive Grid */}
@@ -3543,7 +3561,7 @@ function ScanSubRecipeModal({ settings, onClose, onScanComplete }) {
   );
 }
 
-function PrepScreen({ planner = [], recipes = [], components = [], forecast = null }) {
+function PrepScreen({ planner = [], recipes = [], components = [], forecast = null, forecastMetrics = null }) {
   const [completedKeys, setCompletedKeys] = React.useState(new Set());
   const [syncing, setSyncing] = React.useState(false);
 
@@ -3740,6 +3758,7 @@ function PrepScreen({ planner = [], recipes = [], components = [], forecast = nu
           {forecastNote(forecast) && (
             <p style={{ fontSize: 11, color: C.inkFade, marginTop: 4, fontStyle: 'italic' }}>{forecastNote(forecast)}</p>
           )}
+          <ForecastBadge metrics={forecastMetrics} />
         </div>
         {completedKeys.size > 0 && (
           <button 
