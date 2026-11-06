@@ -6604,7 +6604,7 @@ export function RecipeDigitizer({ kitchenId, recipes = [], onUpdateRecipes, sett
                     <input type="text" value={scannedYield} onChange={(e) => setScannedYield(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
                   </label>
                   <label style={{ fontSize: 11, color: '#aaa' }}>
-                    Sell Price ({"\u00A3"})
+                    Sell Price ({currencySymbol})
                     <input type="number" step="0.01" min="0" placeholder="Not set" value={scannedSellPrice} onChange={(e) => setScannedSellPrice(e.target.value)} style={{ width: '100%', boxSizing: 'border-box', background: '#2c2c2a', border: '1px solid #444', color: '#fff', padding: 8, fontSize: 13, borderRadius: 3, marginTop: 4 }} />
                   </label>
                 </div>
