@@ -427,6 +427,24 @@ export default function App() {
   // Falls back to user.id for users who haven't been migrated yet
   // (e.g. if the SQL migration hasn't been run yet) so the app still works.
   const [activeKitchenId, setActiveKitchenId] = useState(null);
+  // Is the signed-in user the owner of the active kitchen? (kitchens.owner_id)
+  // Older kitchens use the owner's user id as the kitchen id, so that counts too.
+  const [isKitchenOwner, setIsKitchenOwner] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    const uid = session?.user?.id;
+    if (!uid || !activeKitchenId) { setIsKitchenOwner(true); return; }
+    if (activeKitchenId === uid) { setIsKitchenOwner(true); return; }
+    (async () => {
+      try {
+        const { data, error } = await supabase.from('kitchens').select('owner_id').eq('id', activeKitchenId).maybeSingle();
+        if (cancelled) return;
+        // If ownership can't be read, don't lock the user out of their settings.
+        setIsKitchenOwner(error || !data || !data.owner_id ? true : data.owner_id === uid);
+      } catch { if (!cancelled) setIsKitchenOwner(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [activeKitchenId, session?.user?.id]);
   useEffect(() => {
     let cancelled = false;
     const loadMembership = async () => {
@@ -1040,7 +1058,7 @@ const sousWaste = wasteView.map(w => ({ item: w.item, qty: w.qty, unit: w.unit, 
         {tab === 'invoices' && <InvoicesScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id || ""} invoices={invoices || []} onUpdate={(val) => update({ invoices: val })} recipes={recipes || []} onUpdateRecipes={(val) => update({ recipes: val })} settings={settings} />}
         {tab === 'suppliers' && <SuppliersScreen supabase={supabase} kitchenId={activeKitchenId || session?.user?.id} settings={settings} />}
         {tab === 'pos' && <PosScreen sales={sales} recipes={recipes} onUpdate={(val) => update({ sales: val })} />}
-        {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} canEdit={!activeKitchenId || activeKitchenId === session?.user?.id} />}
+        {tab === 'settings' && <SettingsScreen settings={settings} onUpdate={(val) => update({ settings: val })} canEdit={isKitchenOwner} />}
         {tab === 'team' && <TeamScreen supabase={supabase} session={session} activeKitchenId={activeKitchenId} />}
         {/* THIS ENSURES IT CALLS RECIPEDIGITIZER WITH THE CORRECT SESSION CONTEXT */}
         {tab === 'scan' && (
