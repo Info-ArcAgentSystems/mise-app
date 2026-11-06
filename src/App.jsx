@@ -4180,6 +4180,36 @@ function useDeleteWithUndo(list, onUpdate) {
   return { pending, ask, cancel, confirm, undo, undoLast };
 }
 
+// Search + day filter for the sales list. Returns indexes into the full list,
+// so edit/delete still act on the right record.
+function useSalesFilter(sales, recipes) {
+  const [q, setQ] = useState('');
+  const [day, setDay] = useState('All');
+  const nameOf = (s) => { const r = recipes.find(x => x.id === s.recipeId); return r ? r.name : 'Unmapped item'; };
+  const term = q.trim().toLowerCase();
+  const visible = sales.map((s, idx) => ({ s, idx }))
+    .filter(({ s }) => (day === 'All' || s.day === day) && (!term || nameOf(s).toLowerCase().includes(term)));
+  const totalPortions = visible.reduce((t, { s }) => t + (Number(s.sold) || 0), 0);
+  const bar = (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', margin: '0 0 12px' }}>
+      <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Search sales by dish…" aria-label="Search sales by dish"
+        style={{ flex: '1 1 220px', padding: '9px 12px', border: '1px solid #c9bfae', borderRadius: 4, background: '#fff', fontSize: 14, boxSizing: 'border-box' }} />
+      <select value={day} onChange={e => setDay(e.target.value)} aria-label="Filter by day"
+        style={{ padding: '9px 10px', border: '1px solid #c9bfae', borderRadius: 4, background: '#fff', fontSize: 14 }}>
+        {['All', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => <option key={d} value={d}>{d === 'All' ? 'All days' : d}</option>)}
+      </select>
+      <span style={{ fontSize: 12, color: '#5a4f40' }}>
+        {visible.length} of {sales.length} records · {totalPortions} portions
+      </span>
+      {(term || day !== 'All') && (
+        <button type="button" onClick={() => { setQ(''); setDay('All'); }}
+          style={{ background: 'none', border: 0, color: '#7a4b2a', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>Clear filters</button>
+      )}
+    </div>
+  );
+  return { visible, bar, filtered: !!term || day !== 'All' };
+}
+
 const rowDeleteBtn = { minHeight: 34, padding: '0 10px', borderRadius: 6, border: '1.5px solid #e8c2b8', background: '#fff', color: '#b8362a', fontWeight: 600, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' };
 const rowEditBtn = { minHeight: 34, padding: '0 10px', borderRadius: 6, border: '1.5px solid #d9d2c8', background: '#fff', color: '#1a1a18', fontWeight: 600, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' };
 
@@ -4195,12 +4225,18 @@ function AddSaleForm({ recipes = [], dishes = [], sales = [], onUpdate }) {
   const submit = (e) => {
     e.preventDefault();
     const qty = parseInt(sold, 10);
-    if (!dish || !Number.isFinite(qty) || qty <= 0) { setMsg('Pick a dish and enter portions sold (above 0).'); return; }
-    const row = recipes.find(r => (r.name || '').trim() === dish) || dishes.find(d => d.name === dish);
+    const typed = dish.trim().toLowerCase();
+    const exact = names.find(n => n.toLowerCase() === typed);
+    const partial = names.filter(n => n.toLowerCase().includes(typed));
+    const pickedName = exact || (partial.length === 1 ? partial[0] : null);
+    if (!typed || !Number.isFinite(qty) || qty <= 0) { setMsg('Pick a dish and enter portions sold (above 0).'); return; }
+    if (!pickedName) { setMsg(partial.length > 1 ? `"${dish}" matches ${partial.length} dishes. Pick one from the list.` : `No dish called "${dish}". Pick one from the list.`); return; }
+    if (pickedName !== dish) setDish(pickedName);
+    const row = recipes.find(r => (r.name || '').trim() === pickedName) || dishes.find(d => d.name === pickedName);
     if (!row) { setMsg("Couldn't find that dish."); return; }
     const sameDish = (s) => {
       const r = recipes.find(x => x.id === s.recipeId);
-      return (r ? (r.name || '').trim() : null) === dish;
+      return (r ? (r.name || '').trim() : null) === pickedName;
     };
     const next = [...sales];
     const idx = next.findIndex(s => s.day === day && s.session === session && sameDish(s));
@@ -4208,7 +4244,8 @@ function AddSaleForm({ recipes = [], dishes = [], sales = [], onUpdate }) {
     else next.push({ day, session, recipeId: row.id, sold: qty });
     onUpdate(next);
     setSold('');
-    setMsg(`Added ${qty} × ${dish} (${day} ${session}).`);
+    setMsg(`Added ${qty} × ${pickedName} (${day} ${session}).`);
+    setDish('');
   };
   const field = { padding: '8px 10px', border: `1px solid ${C.inkRule}`, borderRadius: 4, background: '#fff', fontSize: 13, boxSizing: 'border-box' };
   return (
@@ -4216,10 +4253,10 @@ function AddSaleForm({ recipes = [], dishes = [], sales = [], onUpdate }) {
       <div style={{ width: '100%', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', color: C.inkFade }}>Add sales</div>
       <select value={day} onChange={e => setDay(e.target.value)} style={field}>{days.map(d => <option key={d}>{d}</option>)}</select>
       <select value={session} onChange={e => setSession(e.target.value)} style={field}><option>Lunch</option><option>Dinner</option></select>
-      <select value={dish} onChange={e => setDish(e.target.value)} style={{ ...field, flex: '1 1 200px' }}>
-        <option value="">Select dish…</option>
-        {names.map(n => <option key={n} value={n}>{n}</option>)}
-      </select>
+      <input list="mise-dish-options" value={dish} onChange={e => setDish(e.target.value)}
+        placeholder="Type to search dishes…" aria-label="Dish" autoComplete="off"
+        style={{ ...field, flex: '1 1 200px' }} />
+      <datalist id="mise-dish-options">{names.map(n => <option key={n} value={n} />)}</datalist>
       <input type="number" min="1" step="1" placeholder="Portions" value={sold} onChange={e => setSold(e.target.value)} style={{ ...field, width: 110 }} />
       <button type="submit" style={S.btnAccent}>Add</button>
       {msg && <div style={{ width: '100%', fontSize: 12, color: C.inkSoft }}>{msg}</div>}
@@ -4230,6 +4267,7 @@ function AddSaleForm({ recipes = [], dishes = [], sales = [], onUpdate }) {
 function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = [] }) {
   const currencySymbol = settings?.currency || '£';
   const del = useDeleteWithUndo(sales, onUpdate);
+  const filter = useSalesFilter(sales, recipes);
   const saleLabel = (s) => { const r = recipes.find(x => x.id === s.recipeId); return `${s.sold} × ${r ? r.name : 'Unmapped item'} (${s.day} ${s.session})`; };
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
   useEffect(() => {
@@ -4253,7 +4291,9 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = []
               </div>
             </div>
           )}
-          {sales.map((s, idx) => {
+          {sales.length > 0 && filter.bar}
+          {sales.length > 0 && filter.visible.length === 0 && <div style={{ ...S.card, color: C.inkFade, fontSize: 13 }}>No sales match your search.</div>}
+          {filter.visible.map(({ s, idx }) => {
             const recipe = recipes.find(r => r.id === s.recipeId);
             return (
               <div key={idx} style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12 }}>
@@ -4293,6 +4333,7 @@ function SalesScreen({ recipes = [], sales = [], onUpdate, settings, dishes = []
 
 function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
   const del = useDeleteWithUndo(sales, onUpdate);
+  const filter = useSalesFilter(sales, recipes);
   const saleLabel = (s) => { const r = recipes.find(x => x.id === s.recipeId); return `${s.sold} × ${r ? r.name : 'Unmapped item'} (${s.day} ${s.session})`; };
   const askDelete = (idx) => del.ask(idx, 'Delete this sale?', `${saleLabel(sales[idx])} will be removed from sales and financial totals.`);
   const dialogs = (
@@ -4316,9 +4357,10 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
         <ScreenHeader title="Sales Ledger Registers" sub="Correlate point of sale deployment figures with physical matrix recipes" />
         <AddSaleForm recipes={recipes} dishes={dishes} sales={sales} onUpdate={onUpdate} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {sales.length > 0 && filter.bar}
           {sales.length === 0 ? (
             <div style={{ ...S.card, color: C.inkFade, fontSize: 13 }}>No sales recorded yet.</div>
-          ) : sales.map((s, idx) => {
+          ) : filter.visible.length === 0 ? <div style={{ ...S.card, color: C.inkFade, fontSize: 13 }}>No sales match your search.</div> : filter.visible.map(({ s, idx }) => {
             const recipe = recipes.find(r => r.id === s.recipeId);
             return (
               <div key={idx} style={{ background: '#fff', border: `1px solid ${C.paper2}`, borderRadius: 4, padding: 12 }}>
@@ -4367,8 +4409,11 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
           </p>
         </div>
       ) : (
+      <>
+      {filter.bar}
       <div style={{ ...S.card, overflowX: 'auto' }}>
-        <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse", textAlign: "left" }}>
+        {filter.visible.length === 0 && <div style={{ padding: 16, color: C.inkFade, fontSize: 13 }}>No sales match your search.</div>}
+        <table style={{ width: "100%", minWidth: 480, borderCollapse: "collapse", textAlign: "left", display: filter.visible.length ? 'table' : 'none' }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${C.inkRule}` }}>
               <th style={{ padding: 10 }}><SectionLabel label="Day Block" /></th>
@@ -4379,7 +4424,7 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
             </tr>
           </thead>
           <tbody>
-            {sales.map((s, idx) => {
+            {filter.visible.map(({ s, idx }) => {
               const recipe = recipes.find(r => r.id === s.recipeId);
               return (
                 <tr key={idx} style={{ borderBottom: `1px solid ${C.paper2}` }}>
@@ -4402,6 +4447,7 @@ function SalesLedgerView({ sales, recipes, onUpdate, dishes = [] }) {
           </tbody>
         </table>
       </div>
+      </>
       )}
       {dialogs}
     </div>
